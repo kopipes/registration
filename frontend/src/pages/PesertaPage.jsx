@@ -305,7 +305,12 @@ export default function PesertaPage() {
                     </thead>
                     <tbody>
                       {pesertaList.map(p => (
-                        <tr key={p.id} style={selected.has(p.id) ? { background: 'var(--bg)' } : undefined}>
+                        <tr
+                          key={p.id}
+                          style={selected.has(p.id)
+                            ? { background: 'rgba(49,130,206,0.08)', boxShadow: 'inset 3px 0 0 var(--primary)' }
+                            : undefined}
+                        >
                           {isAdmin && (
                             <td>
                               <input
@@ -361,7 +366,11 @@ export default function PesertaPage() {
               : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {pesertaList.map(p => (
-                    <div key={p.id} className="card" style={{ overflow: 'hidden' }}>
+                    <div key={p.id} className="card" style={{
+                      overflow: 'hidden',
+                      border: selected.has(p.id) ? '1.5px solid var(--primary)' : undefined,
+                      background: selected.has(p.id) ? 'rgba(49,130,206,0.05)' : undefined,
+                    }}>
                       <div style={{ display: 'flex', overflow: 'hidden' }}>
                         <div style={{
                           width: 4, flexShrink: 0,
