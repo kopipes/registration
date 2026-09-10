@@ -79,12 +79,31 @@ function initDb(dbPath) {
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS upload_batches (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename    TEXT NOT NULL,
+      uploaded_by INTEGER REFERENCES users(id),
+      uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+      total_rows  INTEGER NOT NULL DEFAULT 0,
+      inserted    INTEGER NOT NULL DEFAULT 0,
+      skipped     INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE INDEX IF NOT EXISTS idx_peserta_nik      ON peserta(nik);
     CREATE INDEX IF NOT EXISTS idx_peserta_nama     ON peserta(nama);
     CREATE INDEX IF NOT EXISTS idx_peserta_section  ON peserta(section);
     CREATE INDEX IF NOT EXISTS idx_registrations_peserta ON registrations(peserta_id);
     CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
   `);
+
+  // Migration: add upload_batch_id column to existing peserta tables
+  const cols = db.pragma('table_info(peserta)');
+  if (!cols.some(c => c.name === 'upload_batch_id')) {
+    db.exec('ALTER TABLE peserta ADD COLUMN upload_batch_id INTEGER REFERENCES upload_batches(id)');
+  }
+
+  // Index depends on migrated column — created after migration
+  db.exec('CREATE INDEX IF NOT EXISTS idx_peserta_batch ON peserta(upload_batch_id)');
 
   // Seed default admin if no users exist
   const userCount = db.prepare('SELECT COUNT(*) as cnt FROM users').get();

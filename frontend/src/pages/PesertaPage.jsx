@@ -13,24 +13,71 @@ export default function PesertaPage() {
   const [query, setQuery] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [sectionFilter, setSectionFilter] = useState('')
+  const [batchFilter, setBatchFilter] = useState('')
   const [page, setPage] = useState(1)
   const [modal, setModal] = useState(null)
   const [uploadResult, setUploadResult] = useState(null)
+  const [selected, setSelected] = useState(new Set())
   const fileRef = useRef()
   const searchTimer = useRef()
 
+  const isAdmin = user?.role === 'admin'
+  // When searching/filtering, fetch all matches (no pagination). When browsing, paginate.
+  const isFiltering = !!searchTerm || !!sectionFilter || !!batchFilter
+
   const { data, isLoading } = useQuery({
-    queryKey: ['peserta-admin', searchTerm, sectionFilter, page],
+    queryKey: ['peserta-admin', searchTerm, sectionFilter, batchFilter, isFiltering ? 0 : page],
     queryFn: () => api.get('/peserta', {
-      params: { q: searchTerm || undefined, section: sectionFilter || undefined, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }
+      params: {
+        q: searchTerm || undefined,
+        section: sectionFilter || undefined,
+        batch_id: batchFilter || undefined,
+        limit: isFiltering ? 500 : PAGE_SIZE,
+        offset: isFiltering ? 0 : (page - 1) * PAGE_SIZE,
+      }
     }).then(r => r.data),
     keepPreviousData: true,
+  })
+
+  const { data: batches = [] } = useQuery({
+    queryKey: ['batches'],
+    queryFn: () => api.get('/peserta/batches').then(r => r.data).catch(() => []),
+    enabled: isAdmin,
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id) => api.delete(`/peserta/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['peserta-admin'] }),
   })
+
+  const bulkUpdateMutation = useMutation({
+    mutationFn: (payload) => api.post('/peserta/bulk-update', payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['peserta-admin'] })
+      setSelected(new Set())
+      setModal(null)
+    },
+  })
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids) => api.post('/peserta/bulk-delete', { ids }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['peserta-admin'] })
+      setSelected(new Set())
+      setModal(null)
+    },
+  })
+
+  const deleteBatchMutation = useMutation({
+    mutationFn: (id) => api.delete(`/peserta/batches/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['peserta-admin'] })
+      qc.invalidateQueries({ queryKey: ['batches'] })
+      if (String(batchFilter) === String(deletingBatchId)) setBatchFilter('')
+    },
+  })
+
+  const [deletingBatchId, setDeletingBatchId] = useState(null)
 
   function handleSearch(val) {
     setQuery(val)
@@ -41,6 +88,13 @@ export default function PesertaPage() {
   function handleSectionChange(val) {
     setSectionFilter(val)
     setPage(1)
+    setSelected(new Set())
+  }
+
+  function handleBatchChange(val) {
+    setBatchFilter(val)
+    setPage(1)
+    setSelected(new Set())
   }
 
   async function handleUpload(e) {
@@ -55,6 +109,7 @@ export default function PesertaPage() {
       })
       setUploadResult({ success: true, ...res.data })
       qc.invalidateQueries({ queryKey: ['peserta-admin'] })
+      qc.invalidateQueries({ queryKey: ['batches'] })
     } catch (err) {
       setUploadResult({ success: false, error: err.response?.data?.error || 'Upload gagal' })
     }
@@ -73,6 +128,20 @@ export default function PesertaPage() {
 
   const pesertaList = data?.data || []
 
+  function toggleSelect(id) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    const ids = pesertaList.map(p => p.id)
+    const allSelected = ids.every(id => selected.has(id))
+    setSelected(allSelected ? new Set() : new Set(ids))
+  }
+
   const SectionBadge = ({ section }) => section
     ? <span style={{ ...getSectionStyle(section), borderRadius: '99px', padding: '2px 9px', fontSize: '0.68rem', fontWeight: 700, display: 'inline-block', whiteSpace: 'nowrap' }}>{section}</span>
     : null
@@ -83,6 +152,9 @@ export default function PesertaPage() {
     return <span className="badge badge-muted">Belum</span>
   }
 
+  const selectedCount = selected.size
+  const allOnPageSelected = pesertaList.length > 0 && pesertaList.every(p => selected.has(p.id))
+
   return (
     <>
       <div className="page-header">
@@ -91,7 +163,7 @@ export default function PesertaPage() {
             <h1>Data Peserta</h1>
             <p>Kelola data peserta event</p>
           </div>
-          {user?.role === 'admin' && (
+          {isAdmin && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button className="btn btn-outline btn-sm" onClick={() => fileRef.current?.click()}>Upload Excel</button>
               <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleUpload} />
@@ -106,12 +178,12 @@ export default function PesertaPage() {
         {uploadResult && (
           <div className={`alert ${uploadResult.success ? 'alert-success' : 'alert-danger'}`} style={{ marginBottom: 16 }}>
             {uploadResult.success
-              ? `Upload berhasil: ${uploadResult.inserted} data baru, ${uploadResult.skipped} duplikat (total ${uploadResult.total} baris)`
+              ? `Upload berhasil: ${uploadResult.inserted} data baru, ${uploadResult.skipped} dilewati (email/NIK sudah ada, tidak tertimpa) — batch #${uploadResult.batch_id}`
               : uploadResult.error}
           </div>
         )}
 
-        {/* Search + filter */}
+        {/* Search + filters */}
         <div className="filter-row" style={{ marginBottom: 16 }}>
           <div className="search-wrapper" style={{ flex: 1 }}>
             <span className="search-icon">⌕</span>
@@ -123,11 +195,92 @@ export default function PesertaPage() {
               <option key={s} value={s}>{s}</option>
             ))}
           </select>
+          {isAdmin && (
+            <select value={batchFilter} onChange={e => handleBatchChange(e.target.value)} style={{ minWidth: 150 }}>
+              <option value="">Semua Batch Upload</option>
+              {batches.map(b => (
+                <option key={b.id} value={b.id}>
+                  #{b.id} — {b.filename?.slice(0, 20)} ({new Date(b.uploaded_at).toLocaleDateString('id-ID')})
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
-        {/* Count */}
-        <div style={{ marginBottom: 12, fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>
-          {isLoading ? 'Memuat...' : `${data?.total ?? 0} peserta`}
+        {/* Bulk actions bar */}
+        {isAdmin && selectedCount > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            padding: '10px 14px', marginBottom: 16,
+            background: 'var(--primary)', borderRadius: 'var(--radius-lg)',
+            color: '#fff', animation: 'slideDown 0.15s ease',
+          }}>
+            <strong style={{ fontSize: '0.85rem' }}>{selectedCount} dipilih</strong>
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-sm" style={{ background: 'rgba(255,255,255,0.15)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)' }} onClick={() => setModal({ type: 'bulk-edit' })}>
+              ✎ Bulk Edit
+            </button>
+            <button className="btn btn-sm" style={{ background: 'rgba(255,255,255,0.15)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)' }} onClick={() => setSelected(new Set())}>
+              Batal
+            </button>
+            <button className="btn btn-danger btn-sm" onClick={() => setModal({ type: 'bulk-delete' })}>
+              Hapus ({selectedCount})
+            </button>
+          </div>
+        )}
+
+        {/* Batch info card when batch filter active */}
+        {isAdmin && batchFilter && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-body" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '12px 16px' }}>
+              <span className="badge badge-primary">Batch #{batchFilter}</span>
+              {(() => {
+                const b = batches.find(x => String(x.id) === String(batchFilter))
+                if (!b) return null
+                return (
+                  <>
+                    <span style={{ fontSize: '0.8rem' }}>{b.filename}</span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      diupload {new Date(b.uploaded_at).toLocaleString('id-ID')} oleh {b.uploaded_by_name || '—'}
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      • {b.active_peserta} peserta aktif
+                    </span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => {
+                        setDeletingBatchId(batchFilter)
+                        if (confirm(`Hapus SEMUA peserta di batch #${batchFilter}?\n\n${b.active_peserta} peserta akan dinonaktifkan.`)) {
+                          deleteBatchMutation.mutate(batchFilter)
+                        }
+                      }}
+                    >
+                      Hapus Batch Ini
+                    </button>
+                  </>
+                )
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Count + select all */}
+        <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+          {isAdmin && pesertaList.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 500, marginBottom: 0, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={allOnPageSelected}
+                onChange={toggleSelectAll}
+                style={{ width: 'auto' }}
+              />
+              Pilih semua
+            </label>
+          )}
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+            {isLoading ? 'Memuat...' : `${data?.total ?? 0} peserta`}
+          </span>
         </div>
 
         {/* Desktop table */}
@@ -141,24 +294,38 @@ export default function PesertaPage() {
                   <table>
                     <thead>
                       <tr>
+                        {isAdmin && <th style={{ width: 40 }}></th>}
                         <th>Nama</th>
                         <th>NIK</th>
                         <th>Email</th>
-                        <th>Telepon</th>
                         <th>Seat</th>
                         <th>Status</th>
-                        {user?.role === 'admin' && <th>Aksi</th>}
+                        {isAdmin && <th>Aksi</th>}
                       </tr>
                     </thead>
                     <tbody>
                       {pesertaList.map(p => (
-                        <tr key={p.id}>
+                        <tr key={p.id} style={selected.has(p.id) ? { background: 'var(--bg)' } : undefined}>
+                          {isAdmin && (
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={selected.has(p.id)}
+                                onChange={() => toggleSelect(p.id)}
+                                style={{ width: 'auto', cursor: 'pointer' }}
+                              />
+                            </td>
+                          )}
                           <td>
                             <div style={{ fontWeight: 600 }}>{p.nama}</div>
+                            {p.upload_batch_id && (
+                              <div style={{ fontSize: '0.65rem', color: 'var(--text-subtle)', marginTop: 2 }}>
+                                batch #{p.upload_batch_id}
+                              </div>
+                            )}
                           </td>
                           <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{p.nik}</td>
                           <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{p.email || '—'}</td>
-                          <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{p.no_telpon || '—'}</td>
                           <td>
                             {p.seat
                               ? <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -168,7 +335,7 @@ export default function PesertaPage() {
                               : '—'}
                           </td>
                           <td><StatusBadge status={p.reg_status} /></td>
-                          {user?.role === 'admin' && (
+                          {isAdmin && (
                             <td>
                               <div style={{ display: 'flex', gap: 6 }}>
                                 <button className="btn btn-outline btn-sm" onClick={() => setModal({ type: 'edit', peserta: p })}>Edit</button>
@@ -196,28 +363,35 @@ export default function PesertaPage() {
                   {pesertaList.map(p => (
                     <div key={p.id} className="card" style={{ overflow: 'hidden' }}>
                       <div style={{ display: 'flex', overflow: 'hidden' }}>
-                        {/* Status stripe */}
                         <div style={{
                           width: 4, flexShrink: 0,
                           background: p.reg_status === 'registered' ? 'var(--success)'
                             : p.reg_status === 'cancelled' ? 'var(--danger)' : 'var(--border)'
                         }} />
                         <div style={{ flex: 1, padding: '12px 14px' }}>
-                          {/* Name + seat */}
                           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
-                            <div style={{ fontWeight: 700, fontSize: '0.95rem', letterSpacing: '-0.01em' }}>{p.nama}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                              {isAdmin && (
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(p.id)}
+                                  onChange={() => toggleSelect(p.id)}
+                                  style={{ width: 'auto', cursor: 'pointer', flexShrink: 0 }}
+                                />
+                              )}
+                              <div style={{ fontWeight: 700, fontSize: '0.95rem', letterSpacing: '-0.01em' }}>{p.nama}</div>
+                            </div>
                             {p.section && <SectionBadge section={p.section} />}
                           </div>
-                          {/* Details */}
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 10 }}>
                             {p.nik && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{p.nik}</div>}
                             {p.email && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{p.email}</div>}
                             {p.no_telpon && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{p.no_telpon}</div>}
+                            {p.upload_batch_id && <div style={{ fontSize: '0.68rem', color: 'var(--text-subtle)' }}>batch #{p.upload_batch_id}</div>}
                           </div>
-                          {/* Footer */}
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, borderTop: '1px solid var(--border)' }}>
                             <StatusBadge status={p.reg_status} />
-                            {user?.role === 'admin' && (
+                            {isAdmin && (
                               <div style={{ display: 'flex', gap: 6 }}>
                                 <button className="btn btn-outline btn-sm" onClick={() => setModal({ type: 'edit', peserta: p })}>Edit</button>
                                 <button className="btn btn-danger btn-sm" onClick={() => { if (confirm(`Hapus "${p.nama}"?`)) deleteMutation.mutate(p.id) }}>Hapus</button>
@@ -235,13 +409,35 @@ export default function PesertaPage() {
       </div>
 
       {/* Pagination */}
-      <Pagination
-        total={data?.total ?? 0}
-        page={page}
-        pageSize={PAGE_SIZE}
-        onChange={setPage}
-      />
+      <div style={{ padding: '0 28px' }}>
+        {!isFiltering && (
+          <Pagination
+            total={data?.total ?? 0}
+            page={page}
+            pageSize={PAGE_SIZE}
+            onChange={setPage}
+          />
+        )}
+      </div>
 
+      {modal?.type === 'bulk-edit' && (
+        <BulkEditModal
+          count={selectedCount}
+          loading={bulkUpdateMutation.isPending}
+          error={bulkUpdateMutation.error?.response?.data?.error}
+          onSubmit={(updates) => bulkUpdateMutation.mutate({ ids: [...selected], updates })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {modal?.type === 'bulk-delete' && (
+        <BulkDeleteModal
+          count={selectedCount}
+          loading={bulkDeleteMutation.isPending}
+          error={bulkDeleteMutation.error?.response?.data?.error}
+          onConfirm={() => bulkDeleteMutation.mutate([...selected])}
+          onClose={() => setModal(null)}
+        />
+      )}
       {modal && (modal.type === 'add' || modal.type === 'edit') && (
         <PesertaFormModal
           peserta={modal.type === 'edit' ? modal.peserta : null}
@@ -250,6 +446,63 @@ export default function PesertaPage() {
         />
       )}
     </>
+  )
+}
+
+function BulkEditModal({ count, loading, error, onSubmit, onClose }) {
+  const [seat, setSeat] = useState('')
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <h3>Bulk Edit — {count} peserta</h3>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          {error && <div className="alert alert-danger">{error}</div>}
+          <p style={{ fontSize: '0.85rem', marginBottom: 16, color: 'var(--text-muted)' }}>
+            Ubah seat/section untuk semua peserta terpilih sekaligus.
+          </p>
+          <div className="form-group">
+            <label>Seat Baru (contoh: BLUE - 001)</label>
+            <input value={seat} onChange={e => setSeat(e.target.value)} placeholder="Kosongkan jika tidak diubah" />
+            <div className="form-hint">Format SECTION - NOMOR. Section otomatis ter-extract dari seat.</div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-outline" onClick={onClose} disabled={loading}>Batal</button>
+          <button className="btn btn-primary" onClick={() => onSubmit({ seat })} disabled={loading || !seat.trim()}>
+            {loading ? 'Menyimpan...' : `Update ${count} peserta`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BulkDeleteModal({ count, loading, error, onConfirm, onClose }) {
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <h3>Konfirmasi Hapus</h3>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          {error && <div className="alert alert-danger">{error}</div>}
+          <div className="alert alert-danger">
+            Yakin hapus <strong>{count} peserta</strong> terpilih? Data bisa di-restore manual oleh admin dari database, tapi tidak tampil lagi di aplikasi.
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-outline" onClick={onClose} disabled={loading}>Batal</button>
+          <button className="btn btn-danger" onClick={onConfirm} disabled={loading}>
+            {loading ? 'Menghapus...' : `Ya, Hapus ${count}`}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

@@ -15,6 +15,7 @@ module.exports = async function (fastify) {
           q: { type: 'string' },
           section: { type: 'string' },
           status: { type: 'string', enum: ['registered', 'cancelled', 'pending'] },
+          batch_id: { type: 'integer' },
           limit: { type: 'integer', default: 50 },
           offset: { type: 'integer', default: 0 },
         },
@@ -22,7 +23,7 @@ module.exports = async function (fastify) {
     },
   }, async (request) => {
     const db = getDb();
-    const { q, section, status, limit = 50, offset = 0 } = request.query;
+    const { q, section, status, batch_id, limit = 50, offset = 0 } = request.query;
 
     let query = `
       SELECT
@@ -63,6 +64,11 @@ module.exports = async function (fastify) {
       params.push(section);
     }
 
+    if (batch_id) {
+      query += ' AND p.upload_batch_id = ?';
+      params.push(batch_id);
+    }
+
     if (status === 'registered') {
       query += " AND r.status = 'registered'";
     } else if (status === 'cancelled') {
@@ -86,6 +92,60 @@ module.exports = async function (fastify) {
       offset,
       data: rows.map(r => maskNik(r, request.user.role)),
     };
+  });
+
+  // GET /api/peserta/batches — list upload batches
+  fastify.get('/batches', {
+    onRequest: [fastify.authenticate],
+  }, async (request) => {
+    if (request.user.role !== 'admin') {
+      return { error: 'Akses ditolak' };
+    }
+    const db = getDb();
+    const batches = db.prepare(`
+      SELECT
+        b.*,
+        u.full_name AS uploaded_by_name,
+        (SELECT COUNT(*) FROM peserta p WHERE p.upload_batch_id = b.id AND p.is_active = 1) AS active_peserta
+      FROM upload_batches b
+      LEFT JOIN users u ON u.id = b.uploaded_by
+      ORDER BY b.uploaded_at DESC
+    `).all();
+    return batches;
+  });
+
+  // DELETE /api/peserta/batches/:id — remove all peserta in a batch
+  fastify.delete('/batches/:id', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', properties: { id: { type: 'integer' } } },
+    },
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Hanya Admin yang bisa menghapus batch' });
+    }
+
+    const db = getDb();
+    const batchId = Number(request.params.id);
+    const batch = db.prepare('SELECT * FROM upload_batches WHERE id = ?').get(batchId);
+    if (!batch) return reply.code(404).send({ error: 'Batch tidak ditemukan' });
+
+    // Soft-delete all active peserta in this batch
+    const result = db.prepare(
+      "UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE upload_batch_id = ? AND is_active = 1"
+    ).run(batchId);
+
+    log({
+      userId: request.user.id,
+      username: request.user.username,
+      action: 'DELETE_BATCH',
+      entity: 'upload_batches',
+      entityId: batchId,
+      detail: { filename: batch.filename, removed: result.changes },
+      ipAddress: request.ip,
+    });
+
+    return { message: `Batch dihapus — ${result.changes} peserta dinonaktifkan`, removed: result.changes };
   });
 
   // GET /api/peserta/:id
@@ -116,6 +176,130 @@ module.exports = async function (fastify) {
 
     if (!row) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
     return maskNik(row, request.user.role);
+  });
+
+  // POST /api/peserta/bulk-update — bulk edit multiple peserta (Admin only)
+  fastify.post('/bulk-update', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['ids'],
+        properties: {
+          ids: { type: 'array', items: { type: 'integer' }, minItems: 1 },
+          updates: {
+            type: 'object',
+            properties: {
+              section: { type: 'string' },
+              seat:    { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Hanya Admin yang bisa bulk edit' });
+    }
+
+    const db = getDb();
+    const { ids, updates } = request.body;
+    const { section, seat } = updates || {};
+
+    if (!section && !seat) {
+      return reply.code(400).send({ error: 'Minimal satu field untuk update (section atau seat)' });
+    }
+
+    // Resolve final seat/section values
+    let finalSeat = seat || null;
+    let finalSection = section || null;
+    let finalSeatNumber = null;
+    if (finalSeat) {
+      const parsed = parseSeat(finalSeat);
+      finalSection = parsed.section;
+      finalSeatNumber = parsed.seat_number;
+    } else if (finalSection) {
+      finalSeat = null; // section-only update, keep each peserta's seat number untouched? No —
+      // if only section given without seat, we just update the section label
+    }
+
+    const updateStmt = db.prepare(`
+      UPDATE peserta SET
+        seat = COALESCE(?, seat),
+        section = COALESCE(?, section),
+        seat_number = COALESCE(?, seat_number),
+        updated_at = datetime('now')
+      WHERE id = ? AND is_active = 1
+    `);
+
+    const runBulk = db.transaction((idList) => {
+      let updated = 0;
+      for (const id of idList) {
+        const res = updateStmt.run(finalSeat, finalSection, finalSeatNumber, id);
+        if (res.changes > 0) updated++;
+      }
+      return updated;
+    });
+
+    const updated = runBulk(ids);
+
+    log({
+      userId: request.user.id,
+      username: request.user.username,
+      action: 'BULK_EDIT_PESERTA',
+      entity: 'peserta',
+      detail: { count: updated, section, seat, ids: ids.slice(0, 50) },
+      ipAddress: request.ip,
+    });
+
+    return { message: `${updated} peserta berhasil diupdate`, updated };
+  });
+
+  // POST /api/peserta/bulk-delete — bulk remove (soft delete, Admin only)
+  fastify.post('/bulk-delete', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['ids'],
+        properties: {
+          ids: { type: 'array', items: { type: 'integer' }, minItems: 1 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Hanya Admin yang bisa bulk delete' });
+    }
+
+    const db = getDb();
+    const { ids } = request.body;
+
+    const deleteStmt = db.prepare(
+      "UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE id = ? AND is_active = 1"
+    );
+
+    const runBulk = db.transaction((idList) => {
+      let deleted = 0;
+      for (const id of idList) {
+        const res = deleteStmt.run(id);
+        if (res.changes > 0) deleted++;
+      }
+      return deleted;
+    });
+
+    const deleted = runBulk(ids);
+
+    log({
+      userId: request.user.id,
+      username: request.user.username,
+      action: 'BULK_DELETE_PESERTA',
+      entity: 'peserta',
+      detail: { count: deleted, ids: ids.slice(0, 50) },
+      ipAddress: request.ip,
+    });
+
+    return { message: `${deleted} peserta berhasil dihapus`, deleted };
   });
 
   // POST /api/peserta — add manual (Admin only)
@@ -316,26 +500,18 @@ module.exports = async function (fastify) {
     }
 
     const db = getDb();
+
+    // Create batch record first
+    const batchResult = db.prepare(`
+      INSERT INTO upload_batches (filename, uploaded_by, total_rows)
+      VALUES (?, ?, 0)
+    `).run(data.filename, request.user.id);
+    const batchId = batchResult.lastInsertRowid;
+
     let inserted = 0;
     let skipped = 0;
-    const errors = [];
-
-    const insertStmt = db.prepare(`
-      INSERT OR IGNORE INTO peserta (nama, nik, email, no_telpon, seat, section, seat_number)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = db.transaction((rows) => {
-      for (const row of rows) {
-        const result = insertStmt.run(
-          row.nama, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number
-        );
-        if (result.changes > 0) inserted++;
-        else skipped++;
-      }
-    });
-
     const rowsToInsert = [];
+
     ws.eachRow((row, rowNum) => {
       if (rowNum === 1) return; // skip header
       const nama = getCellValue(row, colMap.nama);
@@ -356,18 +532,63 @@ module.exports = async function (fastify) {
       });
     });
 
-    insertMany(rowsToInsert);
+    // Pre-fetch existing emails & NIKs for duplicate detection
+    const existingEmails = new Set(
+      db.prepare('SELECT LOWER(email) AS e FROM peserta WHERE is_active = 1 AND email IS NOT NULL').all().map(r => r.e)
+    );
+    const existingNiks = new Set(
+      db.prepare('SELECT nik FROM peserta WHERE is_active = 1').all().map(r => r.nik)
+    );
+
+    // Filter rows: skip if email OR nik already exists (data tidak tertimpa)
+    const newRows = [];
+    for (const row of rowsToInsert) {
+      const emailKey = row.email ? String(row.email).trim().toLowerCase() : null;
+      if (emailKey && existingEmails.has(emailKey)) { skipped++; continue; }
+      if (existingNiks.has(row.nik)) { skipped++; continue; }
+      newRows.push(row);
+      // Add to sets so intra-file duplicates are also caught
+      if (emailKey) existingEmails.add(emailKey);
+      existingNiks.add(row.nik);
+    }
+
+    const insertStmt = db.prepare(`
+      INSERT INTO peserta (nama, nik, email, no_telpon, seat, section, seat_number, upload_batch_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const insertMany = db.transaction((rows) => {
+      for (const row of rows) {
+        const result = insertStmt.run(
+          row.nama, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
+        );
+        if (result.changes > 0) inserted++;
+      }
+    });
+
+    insertMany(newRows);
+
+    // Update batch stats
+    db.prepare('UPDATE upload_batches SET total_rows = ?, inserted = ?, skipped = ? WHERE id = ?')
+      .run(rowsToInsert.length, inserted, skipped, batchId);
 
     log({
       userId: request.user.id,
       username: request.user.username,
       action: 'UPLOAD_EXCEL',
       entity: 'peserta',
-      detail: { filename: data.filename, inserted, skipped },
+      entityId: batchId,
+      detail: { filename: data.filename, batch_id: batchId, inserted, skipped, total: rowsToInsert.length },
       ipAddress: request.ip,
     });
 
-    return { message: 'Upload berhasil', inserted, skipped, total: rowsToInsert.length };
+    return {
+      message: 'Upload berhasil',
+      batch_id: batchId,
+      inserted,
+      skipped,
+      total: rowsToInsert.length,
+    };
   });
 };
 
