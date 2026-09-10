@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Environment & secrets
+backend/.env
+.env
+.env.local
+
+# Database & runtime data
+backend/data/
+backend/backups/
+backend/uploads/
+*.db
+*.sqlite
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Build output
+frontend/dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/

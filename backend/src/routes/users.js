@@ -1,0 +1,234 @@
+'use strict';
+
+const bcrypt = require('bcryptjs');
+const { getDb } = require('../db/schema');
+const { log } = require('../services/audit');
+
+module.exports = async function (fastify) {
+  // GET /api/users — Admin only
+  fastify.get('/', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Akses ditolak' });
+    }
+    const db = getDb();
+    const users = db.prepare(
+      'SELECT id, username, full_name, role, is_active, created_at FROM users ORDER BY created_at DESC'
+    ).all();
+    return users;
+  });
+
+  // POST /api/users — create user (Admin only)
+  fastify.post('/', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['username', 'password', 'full_name', 'role'],
+        properties: {
+          username: { type: 'string', minLength: 3 },
+          password: { type: 'string', minLength: 6 },
+          full_name: { type: 'string' },
+          role: { type: 'string', enum: ['admin', 'official', 'crew'] },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Akses ditolak' });
+    }
+
+    const db = getDb();
+    const { username, password, full_name, role } = request.body;
+
+    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username.trim().toLowerCase());
+    if (existing) return reply.code(409).send({ error: 'Username sudah digunakan' });
+
+    const hash = bcrypt.hashSync(password, 10);
+    const result = db.prepare(`
+      INSERT INTO users (username, password, full_name, role)
+      VALUES (?, ?, ?, ?)
+    `).run(username.trim().toLowerCase(), hash, full_name.trim(), role);
+
+    log({
+      userId: request.user.id,
+      username: request.user.username,
+      action: 'CREATE_USER',
+      entity: 'users',
+      entityId: result.lastInsertRowid,
+      detail: { username, full_name, role },
+      ipAddress: request.ip,
+    });
+
+    return { id: result.lastInsertRowid, message: 'User berhasil dibuat' };
+  });
+
+  // PUT /api/users/:id — edit user (Admin only)
+  fastify.put('/:id', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', properties: { id: { type: 'integer' } } },
+      body: {
+        type: 'object',
+        properties: {
+          username:  { type: 'string', minLength: 3 },
+          full_name: { type: 'string' },
+          role:      { type: 'string', enum: ['admin', 'official', 'crew'] },
+          password:  { type: 'string', minLength: 6 },
+          is_active: { type: 'integer', enum: [0, 1] },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Akses ditolak' });
+    }
+
+    const db = getDb();
+    const id = Number(request.params.id);
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!user) return reply.code(404).send({ error: 'User tidak ditemukan' });
+
+    const { username, full_name, role, password, is_active } = request.body;
+    const hash = password ? bcrypt.hashSync(password, 10) : user.password;
+
+    // Check username uniqueness if changed
+    if (username && username.trim().toLowerCase() !== user.username) {
+      const existing = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(username.trim().toLowerCase(), id);
+      if (existing) return reply.code(409).send({ error: 'Username sudah digunakan' });
+    }
+
+    db.prepare(`
+      UPDATE users SET
+        username = ?, full_name = ?, role = ?, password = ?, is_active = ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      username ? username.trim().toLowerCase() : user.username,
+      full_name ?? user.full_name,
+      role ?? user.role,
+      hash,
+      is_active ?? user.is_active,
+      id
+    );
+
+    log({
+      userId: request.user.id,
+      username: request.user.username,
+      action: 'EDIT_USER',
+      entity: 'users',
+      entityId: id,
+      detail: { username, full_name, role, is_active, password_changed: !!password },
+      ipAddress: request.ip,
+    });
+
+    return { message: 'User berhasil diupdate' };
+  });
+
+  // DELETE /api/users/:id/permanent — hard delete (Admin only, cannot delete own account)
+  fastify.delete('/:id/permanent', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', properties: { id: { type: 'integer' } } },
+    },
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Akses ditolak' });
+    }
+
+    const id = Number(request.params.id);
+    if (id === request.user.id) {
+      return reply.code(400).send({ error: 'Tidak bisa menghapus akun sendiri' });
+    }
+
+    const db = getDb();
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!user) return reply.code(404).send({ error: 'User tidak ditemukan' });
+
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+
+    log({
+      userId: request.user.id,
+      username: request.user.username,
+      action: 'DELETE_USER',
+      entity: 'users',
+      entityId: id,
+      detail: { username: user.username, full_name: user.full_name },
+      ipAddress: request.ip,
+    });
+
+    return { message: 'User berhasil dihapus permanen' };
+  });
+
+  // DELETE /api/users/:id — deactivate (Admin only, cannot deactivate own account)
+  fastify.delete('/:id', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', properties: { id: { type: 'integer' } } },
+    },
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Akses ditolak' });
+    }
+
+    const id = Number(request.params.id);
+    if (id === request.user.id) {
+      return reply.code(400).send({ error: 'Tidak bisa menonaktifkan akun sendiri' });
+    }
+
+    const db = getDb();
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!user) return reply.code(404).send({ error: 'User tidak ditemukan' });
+
+    db.prepare("UPDATE users SET is_active = 0, updated_at = datetime('now') WHERE id = ?").run(id);
+
+    log({
+      userId: request.user.id,
+      username: request.user.username,
+      action: 'DEACTIVATE_USER',
+      entity: 'users',
+      entityId: id,
+      detail: { username: user.username },
+      ipAddress: request.ip,
+    });
+
+    return { message: 'User berhasil dinonaktifkan' };
+  });
+
+  // PUT /api/users/change-password — change own password
+  fastify.put('/change-password', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['old_password', 'new_password'],
+        properties: {
+          old_password: { type: 'string' },
+          new_password: { type: 'string', minLength: 6 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const db = getDb();
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(request.user.id);
+
+    if (!bcrypt.compareSync(request.body.old_password, user.password)) {
+      return reply.code(400).send({ error: 'Password lama salah' });
+    }
+
+    const hash = bcrypt.hashSync(request.body.new_password, 10);
+    db.prepare("UPDATE users SET password = ?, updated_at = datetime('now') WHERE id = ?").run(hash, user.id);
+
+    log({
+      userId: user.id,
+      username: user.username,
+      action: 'CHANGE_PASSWORD',
+      entity: 'users',
+      entityId: user.id,
+      ipAddress: request.ip,
+    });
+
+    return { message: 'Password berhasil diubah' };
+  });
+};
