@@ -532,41 +532,73 @@ module.exports = async function (fastify) {
       });
     });
 
-    // Pre-fetch existing emails & NIKs for duplicate detection
+    // Pre-fetch ALL peserta by NIK (including soft-deleted — they still hold the UNIQUE constraint)
+    const allByNik = new Map(
+      db.prepare('SELECT id, nik, email, is_active FROM peserta').all().map(r => [r.nik, r])
+    );
+    // Active emails — duplicates among active rows are skipped
     const existingEmails = new Set(
       db.prepare('SELECT LOWER(email) AS e FROM peserta WHERE is_active = 1 AND email IS NOT NULL').all().map(r => r.e)
     );
-    const existingNiks = new Set(
-      db.prepare('SELECT nik FROM peserta WHERE is_active = 1').all().map(r => r.nik)
-    );
 
-    // Filter rows: skip if email OR nik already exists (data tidak tertimpa)
+    // Classify rows:
+    //  - NIK exists & active      → skip (data tidak tertimpa)
+    //  - Email matches active row → skip
+    //  - NIK exists but soft-deleted → REACTIVATE with new data (re-upload after batch removal)
+    //  - Otherwise                 → insert new
     const newRows = [];
+    const reactivations = []; // { existingId, row }
     for (const row of rowsToInsert) {
       const emailKey = row.email ? String(row.email).trim().toLowerCase() : null;
-      if (emailKey && existingEmails.has(emailKey)) { skipped++; continue; }
-      if (existingNiks.has(row.nik)) { skipped++; continue; }
-      newRows.push(row);
-      // Add to sets so intra-file duplicates are also caught
+      const existing = allByNik.get(row.nik);
+
+      if (existing && existing.is_active === 1) {
+        skipped++; continue; // active duplicate NIK
+      }
+      if (emailKey && existingEmails.has(emailKey)) {
+        skipped++; continue; // active duplicate email
+      }
+
+      if (existing && existing.is_active === 0) {
+        // soft-deleted row with same NIK — reactivate with fresh data
+        reactivations.push({ existingId: existing.id, row });
+      } else {
+        newRows.push(row);
+      }
+      // Track for intra-file duplicate detection
       if (emailKey) existingEmails.add(emailKey);
-      existingNiks.add(row.nik);
+      if (existing) { existing.is_active = 1; existing.email = emailKey; }
+      else allByNik.set(row.nik, { id: null, nik: row.nik, email: emailKey, is_active: 1 });
     }
 
     const insertStmt = db.prepare(`
       INSERT INTO peserta (nama, nik, email, no_telpon, seat, section, seat_number, upload_batch_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const reactivateStmt = db.prepare(`
+      UPDATE peserta SET
+        nama = ?, email = ?, no_telpon = ?, seat = ?, section = ?, seat_number = ?,
+        upload_batch_id = ?, is_active = 1, updated_at = datetime('now')
+      WHERE id = ?
+    `);
 
-    const insertMany = db.transaction((rows) => {
+    let reactivated = 0;
+    const insertMany = db.transaction((rows, reacts) => {
       for (const row of rows) {
         const result = insertStmt.run(
           row.nama, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
         );
         if (result.changes > 0) inserted++;
       }
+      for (const { existingId, row } of reacts) {
+        const result = reactivateStmt.run(
+          row.nama, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId, existingId
+        );
+        if (result.changes > 0) { inserted++; reactivated++; }
+      }
     });
 
-    insertMany(newRows);
+    insertMany(newRows, reactivations);
 
     // Update batch stats
     db.prepare('UPDATE upload_batches SET total_rows = ?, inserted = ?, skipped = ? WHERE id = ?')
@@ -578,7 +610,7 @@ module.exports = async function (fastify) {
       action: 'UPLOAD_EXCEL',
       entity: 'peserta',
       entityId: batchId,
-      detail: { filename: data.filename, batch_id: batchId, inserted, skipped, total: rowsToInsert.length },
+      detail: { filename: data.filename, batch_id: batchId, inserted, reactivated, skipped, total: rowsToInsert.length },
       ipAddress: request.ip,
     });
 
@@ -586,6 +618,7 @@ module.exports = async function (fastify) {
       message: 'Upload berhasil',
       batch_id: batchId,
       inserted,
+      reactivated,
       skipped,
       total: rowsToInsert.length,
     };
