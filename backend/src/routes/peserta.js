@@ -94,7 +94,7 @@ module.exports = async function (fastify) {
     };
   });
 
-  // GET /api/peserta/batches — list upload batches
+  // GET /api/peserta/batches — list upload batches (only ones with actual data)
   fastify.get('/batches', {
     onRequest: [fastify.authenticate],
   }, async (request) => {
@@ -109,6 +109,7 @@ module.exports = async function (fastify) {
         (SELECT COUNT(*) FROM peserta p WHERE p.upload_batch_id = b.id AND p.is_active = 1) AS active_peserta
       FROM upload_batches b
       LEFT JOIN users u ON u.id = b.uploaded_by
+      WHERE b.total_rows > 0
       ORDER BY b.uploaded_at DESC
     `).all();
     return batches;
@@ -501,13 +502,6 @@ module.exports = async function (fastify) {
 
     const db = getDb();
 
-    // Create batch record first
-    const batchResult = db.prepare(`
-      INSERT INTO upload_batches (filename, uploaded_by, total_rows)
-      VALUES (?, ?, 0)
-    `).run(data.filename, request.user.id);
-    const batchId = batchResult.lastInsertRowid;
-
     let inserted = 0;
     let skipped = 0;
     const rowsToInsert = [];
@@ -581,9 +575,19 @@ module.exports = async function (fastify) {
         upload_batch_id = ?, is_active = 1, updated_at = datetime('now')
       WHERE id = ?
     `);
+    const createBatchStmt = db.prepare(`
+      INSERT INTO upload_batches (filename, uploaded_by, total_rows, inserted, skipped)
+      VALUES (?, ?, ?, ?, ?)
+    `);
 
     let reactivated = 0;
+    let batchId = null;
     const insertMany = db.transaction((rows, reacts) => {
+      // Batch created inside the transaction — no ghost rows if anything fails
+      batchId = createBatchStmt.run(
+        data.filename, request.user.id, rowsToInsert.length, 0, 0
+      ).lastInsertRowid;
+
       for (const row of rows) {
         const result = insertStmt.run(
           row.nama, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
@@ -596,13 +600,13 @@ module.exports = async function (fastify) {
         );
         if (result.changes > 0) { inserted++; reactivated++; }
       }
+
+      // Update batch stats in same transaction
+      db.prepare('UPDATE upload_batches SET inserted = ?, skipped = ? WHERE id = ?')
+        .run(inserted, skipped, batchId);
     });
 
     insertMany(newRows, reactivations);
-
-    // Update batch stats
-    db.prepare('UPDATE upload_batches SET total_rows = ?, inserted = ?, skipped = ? WHERE id = ?')
-      .run(rowsToInsert.length, inserted, skipped, batchId);
 
     log({
       userId: request.user.id,
