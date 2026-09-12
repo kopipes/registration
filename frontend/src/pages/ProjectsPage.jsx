@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import { useProject } from '../context/ProjectContext'
 
 export default function ProjectsPage() {
-  const { user, logout } = useAuth()
+  const { user } = useAuth()
   const { projects, isLoading, refetchProjects } = useProject()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -45,21 +45,6 @@ export default function ProjectsPage() {
 
   return (
     <div className="projects-page">
-      <header className="projects-topbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div className="login-icon" style={{ width: 36, height: 36, fontSize: '1rem', borderRadius: 10 }}>🎫</div>
-          <div>
-            <strong style={{ fontSize: '0.95rem' }}>Pilih Project</strong>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-              Login sebagai {user?.full_name} ({user?.role})
-            </div>
-          </div>
-        </div>
-        <button className="btn btn-outline btn-sm" onClick={() => { logout(); navigate('/login') }}>
-          Keluar
-        </button>
-      </header>
-
       <main className="projects-body">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
           <div>

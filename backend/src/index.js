@@ -47,13 +47,33 @@ async function start() {
     decorateReply: false,
   });
 
-  // Auth decorator
+  // Auth decorator — verifies JWT, then confirms the user still exists,
+  // is active, and that the token hasn't been revoked (token_version).
   fastify.decorate('authenticate', async function (request, reply) {
     try {
       await request.jwtVerify();
     } catch (err) {
-      reply.code(401).send({ error: 'Unauthorized' });
+      return reply.code(401).send({ error: 'Unauthorized' });
     }
+
+    const row = db.prepare('SELECT id, username, full_name, role, is_active, token_version FROM users WHERE id = ?')
+      .get(request.user.id);
+
+    if (!row || row.is_active !== 1) {
+      return reply.code(401).send({ error: 'Akun tidak aktif. Silakan login kembali.' });
+    }
+    if ((request.user.token_version ?? 1) !== (row.token_version ?? 1)) {
+      return reply.code(401).send({ error: 'Sesi berakhir. Silakan login kembali.' });
+    }
+
+    // Refresh user data so role changes apply immediately
+    request.user = {
+      id: row.id,
+      username: row.username,
+      full_name: row.full_name,
+      role: row.role,
+      token_version: row.token_version,
+    };
   });
 
   fastify.decorate('requireRole', function (roles) {
@@ -76,6 +96,7 @@ async function start() {
     const skipPaths = [
       '/api/auth', '/api/health',
       '/api/projects', '/api/projects/',
+      '/api/audit', '/api/audit/',
     ];
     if (skipPaths.some(p => url === p || url.startsWith(p + '/'))) return;
     // /api/projects itself needs scoping only for nested mutations — handled in route
@@ -101,6 +122,7 @@ async function start() {
   // Routes
   await fastify.register(require('./routes/auth'), { prefix: '/api/auth' });
   await fastify.register(require('./routes/projects'), { prefix: '/api/projects' });
+  await fastify.register(require('./routes/audit'), { prefix: '/api/audit' });
   await fastify.register(require('./routes/peserta'), { prefix: '/api/peserta' });
   await fastify.register(require('./routes/registrasi'), { prefix: '/api/registrasi' });
   await fastify.register(require('./routes/users'), { prefix: '/api/users' });

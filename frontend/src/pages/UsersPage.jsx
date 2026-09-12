@@ -50,10 +50,10 @@ export default function UsersPage() {
   return (
     <>
       <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div>
             <h1>Kelola User</h1>
-            <p>Buat dan kelola akun petugas</p>
+            <p>Akun bersifat <strong>global</strong> — satu akun bisa dipakai di semua project</p>
           </div>
           <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'add' })}>+ Tambah User</button>
         </div>

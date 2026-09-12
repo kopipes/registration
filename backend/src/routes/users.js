@@ -99,9 +99,13 @@ module.exports = async function (fastify) {
       if (existing) return reply.code(409).send({ error: 'Username sudah digunakan' });
     }
 
+    // Revoke existing sessions if password changed or account disabled
+    const shouldRevoke = !!password || (is_active !== undefined && is_active === 0);
+
     db.prepare(`
       UPDATE users SET
         username = ?, full_name = ?, role = ?, password = ?, is_active = ?,
+        token_version = token_version + ?,
         updated_at = datetime('now','localtime')
       WHERE id = ?
     `).run(
@@ -110,6 +114,7 @@ module.exports = async function (fastify) {
       role ?? user.role,
       hash,
       is_active ?? user.is_active,
+      shouldRevoke ? 1 : 0,
       id
     );
 
@@ -181,7 +186,8 @@ module.exports = async function (fastify) {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) return reply.code(404).send({ error: 'User tidak ditemukan' });
 
-    db.prepare("UPDATE users SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ?").run(id);
+    db.prepare(`UPDATE users SET is_active = 0, token_version = token_version + 1,
+                updated_at = datetime('now','localtime') WHERE id = ?`).run(id);
 
     log({
       userId: request.user.id,
@@ -218,7 +224,8 @@ module.exports = async function (fastify) {
     }
 
     const hash = bcrypt.hashSync(request.body.new_password, 10);
-    db.prepare("UPDATE users SET password = ?, updated_at = datetime('now','localtime') WHERE id = ?").run(hash, user.id);
+    db.prepare(`UPDATE users SET password = ?, token_version = token_version + 1,
+                updated_at = datetime('now','localtime') WHERE id = ?`).run(hash, user.id);
 
     log({
       userId: user.id,

@@ -2,12 +2,14 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 import { useProject } from './context/ProjectContext'
 import Layout from './components/Layout'
+import AppLayout from './components/AppLayout'
 import LoginPage from './pages/LoginPage'
 import ProjectsPage from './pages/ProjectsPage'
 import DashboardPage from './pages/DashboardPage'
 import CheckinPage from './pages/CheckinPage'
 import PesertaPage from './pages/PesertaPage'
 import UsersPage from './pages/UsersPage'
+import AuditPage from './pages/AuditPage'
 import SettingsPage from './pages/SettingsPage'
 
 function ProtectedRoute({ children, roles }) {
@@ -43,7 +45,17 @@ export default function App() {
       <Route path="/login" element={user ? <Navigate to="/projects" replace /> : <LoginPage />} />
       <Route path="/projects" element={
         <ProtectedRoute>
-          <ProjectsPage />
+          <AppLayout><ProjectsPage /></AppLayout>
+        </ProtectedRoute>
+      } />
+      <Route path="/users" element={
+        <ProtectedRoute roles={['admin']}>
+          <AppLayout><UsersPage /></AppLayout>
+        </ProtectedRoute>
+      } />
+      <Route path="/audit" element={
+        <ProtectedRoute roles={['admin']}>
+          <AppLayout><AuditPage /></AppLayout>
         </ProtectedRoute>
       } />
       <Route path="/" element={
@@ -58,11 +70,6 @@ export default function App() {
         <Route path="peserta" element={
           <ProtectedRoute roles={['admin', 'official']}>
             <PesertaPage />
-          </ProtectedRoute>
-        } />
-        <Route path="users" element={
-          <ProtectedRoute roles={['admin']}>
-            <UsersPage />
           </ProtectedRoute>
         } />
         <Route path="settings" element={

@@ -30,6 +30,7 @@ function initDb(dbPath) {
       full_name   TEXT NOT NULL,
       role        TEXT NOT NULL CHECK(role IN ('admin', 'official', 'crew')),
       is_active   INTEGER NOT NULL DEFAULT 1,
+      token_version INTEGER NOT NULL DEFAULT 1,
       created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
@@ -227,6 +228,13 @@ function initDb(dbPath) {
   if (!mapCols.includes('source_label')) {
     db.exec('ALTER TABLE upload_mappings ADD COLUMN source_label TEXT');
     console.log('Migration: added upload_mappings.source_label');
+  }
+
+  // Migration 6: token_version for session revocation
+  const userCols = db.pragma('table_info(users)').map(c => c.name);
+  if (!userCols.includes('token_version')) {
+    db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1');
+    console.log('Migration: added users.token_version');
   }
 
   // Index on migrated column — safe after migration has run

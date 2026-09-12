@@ -612,6 +612,38 @@ select {
   font-size: 0.68rem; color: var(--accent); font-weight: 800;
 }
 
+/* ===== App shell (app-level pages: projects, users, audit) ===== */
+.app-shell { min-height: 100vh; background: var(--bg); }
+.app-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  padding: 12px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20;
+  box-shadow: var(--shadow-xs);
+}
+.app-topbar-logo {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--primary), var(--primary-light));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; flex-shrink: 0;
+}
+.app-topbar-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.app-topbar-nav a {
+  padding: 7px 12px; border-radius: var(--radius-sm);
+  font-size: 0.82rem; font-weight: 600; text-decoration: none;
+  color: var(--text-muted); transition: all 0.15s;
+}
+.app-topbar-nav a:hover { background: var(--bg); color: var(--text); }
+.app-topbar-nav a.active { background: var(--primary); color: #fff; }
+.app-shell-body { padding-bottom: 40px; }
+
+@media (max-width: 768px) {
+  .app-topbar { padding: 10px 14px; }
+  .app-topbar-nav a { padding: 6px 9px; font-size: 0.75rem; }
+}
+
 /* ===== Projects Page ===== */
 .projects-page { min-height: 100vh; background: var(--bg); }
 .projects-topbar {

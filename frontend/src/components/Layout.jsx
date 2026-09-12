@@ -6,7 +6,6 @@ const NAV_ITEMS = [
   { to: '/',        end: true,  icon: '▦', label: 'Dashboard', roles: null },
   { to: '/checkin',             icon: '✓', label: 'Check-in',  roles: null },
   { to: '/peserta',             icon: '☰', label: 'Peserta',   roles: ['admin', 'official'] },
-  { to: '/users',               icon: '👤', label: 'Users',    roles: ['admin'] },
   { to: '/settings',            icon: '⚙', label: 'Settings',  roles: ['admin'] },
 ]
 
@@ -49,6 +48,16 @@ export default function Layout() {
           >
             ⇄ Ganti Project
           </button>
+          {user?.role === 'admin' && (
+            <button
+              className="btn-switch-project"
+              style={{ marginTop: 6 }}
+              onClick={() => navigate('/audit')}
+              title="Audit log & pengaturan aplikasi"
+            >
+              ☰ Menu Utama
+            </button>
+          )}
         </div>
 
         <nav className="sidebar-nav">
