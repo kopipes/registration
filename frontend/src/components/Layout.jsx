@@ -44,20 +44,10 @@ export default function Layout() {
           <button
             className="btn-switch-project"
             onClick={switchProject}
-            title="Ganti project"
+            title="Kembali ke daftar project"
           >
             ⇄ Ganti Project
           </button>
-          {user?.role === 'admin' && (
-            <button
-              className="btn-switch-project"
-              style={{ marginTop: 6 }}
-              onClick={() => navigate('/audit')}
-              title="Audit log & pengaturan aplikasi"
-            >
-              ☰ Menu Utama
-            </button>
-          )}
         </div>
 
         <nav className="sidebar-nav">
