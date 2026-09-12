@@ -13,9 +13,18 @@ module.exports = async function (fastify) {
     }
 
     const db = getDb();
+
+    // Per-project labels for custom extra columns (fall back to generic names)
+    const project = db.prepare('SELECT extra_labels FROM projects WHERE id = ?').get(request.projectId);
+    let extraLabels = {};
+    try { extraLabels = JSON.parse(project?.extra_labels || '{}'); } catch { /* ignore */ }
+    const extraSlots = ['extra1', 'extra2', 'extra3', 'extra4', 'extra5'];
+    const usedExtras = extraSlots.filter(s => extraLabels[s]);
+
     const rows = db.prepare(`
       SELECT
-        p.nama, p.nik, p.email, p.no_telpon, p.seat, p.section, p.seat_number,
+        p.nama, p.kode, p.nik, p.email, p.no_telpon, p.seat, p.section, p.seat_number,
+        p.extra1, p.extra2, p.extra3, p.extra4, p.extra5,
         COALESCE((
           SELECT status FROM registrations r
           WHERE r.peserta_id = p.id
@@ -43,11 +52,18 @@ module.exports = async function (fastify) {
 
     ws.columns = [
       { header: 'NAMA LENGKAP', key: 'nama', width: 30 },
+      { header: 'KODE TIKET', key: 'kode', width: 18 },
       { header: 'NO NIK', key: 'nik', width: 20 },
       { header: 'EMAIL', key: 'email', width: 30 },
       { header: 'NO TELPON', key: 'no_telpon', width: 16 },
       { header: 'SECTION', key: 'section', width: 12 },
       { header: 'SEAT', key: 'seat', width: 16 },
+      // Custom columns — header text follows what was mapped at import time
+      ...usedExtras.map(slot => ({
+        header: extraLabels[slot].toUpperCase(),
+        key: slot,
+        width: 20,
+      })),
       { header: 'STATUS', key: 'status', width: 12 },
       { header: 'WAKTU CHECK-IN', key: 'registered_at', width: 20 },
       { header: 'DICEK-IN OLEH', key: 'registered_by_name', width: 20 },

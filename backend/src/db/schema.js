@@ -43,6 +43,7 @@ function initDb(dbPath) {
       event_name  TEXT,
       theme       TEXT DEFAULT 'navy',
       unique_fields TEXT DEFAULT '["nik","email"]',
+      extra_labels TEXT DEFAULT '{}',
       created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
@@ -59,6 +60,11 @@ function initDb(dbPath) {
       section         TEXT,
       seat_number     TEXT,
       qr_code         TEXT,
+      extra1          TEXT,
+      extra2          TEXT,
+      extra3          TEXT,
+      extra4          TEXT,
+      extra5          TEXT,
       is_active       INTEGER NOT NULL DEFAULT 1,
       upload_batch_id INTEGER REFERENCES upload_batches(id),
       created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -106,6 +112,7 @@ function initDb(dbPath) {
       project_id  INTEGER NOT NULL REFERENCES projects(id),
       field       TEXT NOT NULL,
       source_column TEXT NOT NULL DEFAULT '',
+      source_label  TEXT,
       updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       UNIQUE(project_id, field)
     );
@@ -147,6 +154,80 @@ function initDb(dbPath) {
 
   // Migration 4: shift historical UTC timestamps to WIB (UTC+7), once.
   migrateTimestampsToWib();
+
+  // Migration 5: extra slots for custom Excel columns + per-project header labels
+  const pCols2 = db.pragma('table_info(peserta)').map(c => c.name);
+  if (!pCols2.includes('extra1')) {
+    const baseCols = [
+      'id', 'project_id', 'nama', 'kode', 'nik', 'email', 'no_telpon',
+      'seat', 'section', 'seat_number', 'qr_code', 'is_active',
+      'upload_batch_id', 'created_at', 'updated_at',
+    ].filter(c => pCols2.includes(c));
+
+    // Table rebuild requires FK enforcement off (registrations → peserta)
+    db.pragma('foreign_keys = OFF');
+    try {
+      const rebuild = db.transaction(() => {
+        db.exec('DROP TABLE IF EXISTS peserta_new');
+        db.exec(`
+      CREATE TABLE peserta_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id      INTEGER NOT NULL REFERENCES projects(id),
+        nama            TEXT NOT NULL,
+        kode            TEXT,
+        nik             TEXT,
+        email           TEXT,
+        no_telpon       TEXT,
+        seat            TEXT,
+        section         TEXT,
+        seat_number     TEXT,
+        qr_code         TEXT,
+        extra1          TEXT,
+        extra2          TEXT,
+        extra3          TEXT,
+        extra4          TEXT,
+        extra5          TEXT,
+        is_active       INTEGER NOT NULL DEFAULT 1,
+        upload_batch_id INTEGER REFERENCES upload_batches(id),
+        created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      );
+    `);
+        db.prepare(`
+      INSERT INTO peserta_new (${baseCols.join(', ')})
+      SELECT ${baseCols.join(', ')} FROM peserta
+    `).run();
+        db.exec('DROP TABLE peserta');
+        db.exec('ALTER TABLE peserta_new RENAME TO peserta');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_peserta_nik  ON peserta(nik)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_peserta_kode ON peserta(kode)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_peserta_nama ON peserta(nama)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_peserta_section ON peserta(section)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_peserta_batch ON peserta(upload_batch_id)');
+      });
+      rebuild();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+
+    const fk5 = db.pragma('foreign_key_check');
+    console.log(fk5.length === 0
+      ? 'Migration: peserta extra1..extra5 added (FK clean)'
+      : `WARNING: FK violations after extra-slot migration: ${JSON.stringify(fk5).slice(0, 150)}`);
+  }
+
+  const projCols2 = db.pragma('table_info(projects)').map(c => c.name);
+  if (!projCols2.includes('extra_labels')) {
+    db.exec("ALTER TABLE projects ADD COLUMN extra_labels TEXT DEFAULT '{}'");
+    db.prepare("UPDATE projects SET extra_labels = '{}' WHERE extra_labels IS NULL").run();
+    console.log('Migration: added projects.extra_labels');
+  }
+
+  const mapCols = db.pragma('table_info(upload_mappings)').map(c => c.name);
+  if (!mapCols.includes('source_label')) {
+    db.exec('ALTER TABLE upload_mappings ADD COLUMN source_label TEXT');
+    console.log('Migration: added upload_mappings.source_label');
+  }
 
   // Index on migrated column — safe after migration has run
   db.exec('CREATE INDEX IF NOT EXISTS idx_peserta_batch ON peserta(upload_batch_id)');
@@ -210,6 +291,7 @@ function migrateToMultiProjectInner() {
 
     // 2. Rebuild peserta with project_id + composite unique
     //    (SQLite can't ALTER constraints — copy table)
+    db.exec('DROP TABLE IF EXISTS peserta_new');
     db.exec(`
       CREATE TABLE peserta_new (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -306,6 +388,7 @@ function migrateAddKodeField() {
       const hasKode = cols.includes('kode');
       const hasBatch = cols.includes('upload_batch_id');
 
+      db.exec('DROP TABLE IF EXISTS peserta_new');
       db.exec(`
         CREATE TABLE peserta_new (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,

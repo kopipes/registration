@@ -121,12 +121,13 @@ export default function PesertaPage() {
     e.target.value = ''
   }
 
-  async function performImport(mapping, uniqueFields) {
+  async function performImport(mapping, uniqueFields, extraLabels) {
     const { file } = modal
     const form = new FormData()
     form.append('file', file)
     form.append('mapping', JSON.stringify(mapping))
     form.append('unique_fields', JSON.stringify(uniqueFields))
+    form.append('extra_labels', JSON.stringify(extraLabels || {}))
     const res = await api.post('/peserta/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -176,6 +177,11 @@ export default function PesertaPage() {
   const selectedCount = selected.size
   const allOnPageSelected = pesertaList.length > 0 && pesertaList.every(p => selected.has(p.id))
 
+  // Custom extra columns configured for this project (labels follow uploaded headers)
+  let extraLabels = {}
+  try { extraLabels = JSON.parse(activeProject?.extra_labels || '{}') } catch { /* ignore */ }
+  const usedExtraSlots = ['extra1', 'extra2', 'extra3', 'extra4', 'extra5']
+    .filter(s => extraLabels[s])
   return (
     <>
       <div className="page-header">
@@ -320,6 +326,9 @@ export default function PesertaPage() {
                         <th>NIK</th>
                         <th>Email</th>
                         <th>Seat</th>
+                        {usedExtraSlots.map(slot => (
+                          <th key={slot}>{extraLabels[slot]}</th>
+                        ))}
                         <th>Status</th>
                         {isAdmin && <th>Aksi</th>}
                       </tr>
@@ -360,6 +369,11 @@ export default function PesertaPage() {
                                 </div>
                               : '—'}
                           </td>
+                          {usedExtraSlots.map(slot => (
+                            <td key={slot} style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              {p[slot] || '—'}
+                            </td>
+                          ))}
                           <td><StatusBadge status={p.reg_status} /></td>
                           {isAdmin && (
                             <td>
@@ -480,6 +494,7 @@ export default function PesertaPage() {
       {modal && (modal.type === 'add' || modal.type === 'edit') && (
         <PesertaFormModal
           peserta={modal.type === 'edit' ? modal.peserta : null}
+          extraLabels={extraLabels}
           onClose={() => setModal(null)}
           onSaved={() => { qc.invalidateQueries({ queryKey: ['peserta-admin'] }); setModal(null) }}
         />
@@ -545,10 +560,12 @@ function BulkDeleteModal({ count, loading, error, onConfirm, onClose }) {
   )
 }
 
-function PesertaFormModal({ peserta, onClose, onSaved }) {
+function PesertaFormModal({ peserta, onClose, onSaved, extraLabels = {} }) {
   const [form, setForm] = useState({
     nama: peserta?.nama || '', kode: peserta?.kode || '', nik: peserta?.nik || '',
     email: peserta?.email || '', no_telpon: peserta?.no_telpon || '', seat: peserta?.seat || '',
+    extra1: peserta?.extra1 || '', extra2: peserta?.extra2 || '',
+    extra3: peserta?.extra3 || '', extra4: peserta?.extra4 || '', extra5: peserta?.extra5 || '',
   })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -563,6 +580,8 @@ function PesertaFormModal({ peserta, onClose, onSaved }) {
       setError(err.response?.data?.error || 'Terjadi kesalahan')
     } finally { setLoading(false) }
   }
+
+  const extraSlots = ['extra1', 'extra2', 'extra3', 'extra4', 'extra5']
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -580,6 +599,12 @@ function PesertaFormModal({ peserta, onClose, onSaved }) {
             <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} /></div>
             <div className="form-group"><label>No. Telepon</label><input value={form.no_telpon} onChange={e => setForm(f => ({ ...f, no_telpon: e.target.value }))} /></div>
             <div className="form-group"><label>Seat</label><input value={form.seat} onChange={e => setForm(f => ({ ...f, seat: e.target.value }))} placeholder="BLUE - 001" /></div>
+            {extraSlots.map(slot => (
+              <div className="form-group" key={slot}>
+                <label>{extraLabels[slot] || `Kolom Tambahan ${slot.slice(-1)}`}</label>
+                <input value={form[slot]} onChange={e => setForm(f => ({ ...f, [slot]: e.target.value }))} />
+              </div>
+            ))}
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-outline" onClick={onClose} disabled={loading}>Batal</button>
@@ -600,6 +625,15 @@ const IMPORT_FIELDS = [
   { key: 'seat',      label: 'Seat / Kursi',   required: false },
 ]
 
+// Custom columns — the displayed label follows the uploaded Excel header
+const EXTRA_SLOTS = [
+  { key: 'extra1', label: 'Kolom Tambahan 1' },
+  { key: 'extra2', label: 'Kolom Tambahan 2' },
+  { key: 'extra3', label: 'Kolom Tambahan 3' },
+  { key: 'extra4', label: 'Kolom Tambahan 4' },
+  { key: 'extra5', label: 'Kolom Tambahan 5' },
+]
+
 const UNIQUE_FIELD_OPTIONS = [
   { key: 'kode',      label: 'Kode Tiket / Booking' },
   { key: 'nik',       label: 'NIK' },
@@ -611,6 +645,9 @@ function UploadMappingModal({ preview, onClose, onImport, importing, activeProje
   const [mapping, setMapping] = useState(() => {
     const m = {}
     IMPORT_FIELDS.forEach(f => {
+      m[f.key] = preview.mapping?.[f.key] ?? null
+    })
+    EXTRA_SLOTS.forEach(f => {
       m[f.key] = preview.mapping?.[f.key] ?? null
     })
     return m
@@ -634,6 +671,13 @@ function UploadMappingModal({ preview, onClose, onImport, importing, activeProje
     )
   }
 
+  // Label shown for each extra slot = the Excel header mapped to it
+  const headerNameFor = (slotKey) => {
+    const colIdx = mapping[slotKey]
+    if (!colIdx) return null
+    return preview.headers.find(h => h.index === colIdx)?.name || null
+  }
+
   const namaOk = !!mapping.nama
   // Every selected unique field must be mapped to an Excel column
   const mappedUnique = uniqueFields.filter(f => !!mapping[f])
@@ -648,7 +692,13 @@ function UploadMappingModal({ preview, onClose, onImport, importing, activeProje
       return setError(`Patokan unik berikut belum dipetakan ke kolom Excel: ${missing.join(', ')}`)
     }
     setError('')
-    onImport(mapping, uniqueFields)
+    // Send header labels for mapped extra slots so the app can label them
+    const extraLabels = {}
+    EXTRA_SLOTS.forEach(s => {
+      const name = headerNameFor(s.key)
+      if (name) extraLabels[s.key] = name
+    })
+    onImport(mapping, uniqueFields, extraLabels)
   }
 
   return (
@@ -691,6 +741,40 @@ function UploadMappingModal({ preview, onClose, onImport, importing, activeProje
                 </select>
               </div>
             ))}
+          </div>
+
+          {/* Custom columns — label follows the Excel header */}
+          <div style={{ marginTop: 20 }}>
+            <p style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>
+              Kolom Tambahan (opsional)
+            </p>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+              Kolom lain di file Anda bisa disimpan juga (maks 5). Nama kolom akan mengikuti
+              header Excel yang Anda pilih.
+            </p>
+            <div className="mapping-table">
+              {EXTRA_SLOTS.map(slot => {
+                const headerName = headerNameFor(slot.key)
+                return (
+                  <div key={slot.key} className="mapping-row">
+                    <div className="mapping-label">
+                      {headerName
+                        ? <span style={{ color: 'var(--accent)' }}>{headerName}</span>
+                        : slot.label}
+                    </div>
+                    <select
+                      value={mapping[slot.key] ?? ''}
+                      onChange={e => setField(slot.key, e.target.value)}
+                    >
+                      <option value="">— Tidak disimpan —</option>
+                      {preview.headers.map(h => (
+                        <option key={h.index} value={h.index}>{h.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )
+              })}
+            </div>
           </div>
 
           {/* Unique fields selection — at import time */}

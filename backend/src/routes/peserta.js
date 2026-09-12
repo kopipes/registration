@@ -56,9 +56,11 @@ module.exports = async function (fastify) {
         p.email LIKE ? OR
         p.no_telpon LIKE ? OR
         p.seat LIKE ? OR
-        p.section LIKE ?
+        p.section LIKE ? OR
+        p.extra1 LIKE ? OR p.extra2 LIKE ? OR p.extra3 LIKE ? OR
+        p.extra4 LIKE ? OR p.extra5 LIKE ?
       )`;
-      params.push(term, term, term, term, term, term, term);
+      params.push(term, term, term, term, term, term, term, term, term, term, term, term);
     }
 
     if (section) {
@@ -317,6 +319,8 @@ module.exports = async function (fastify) {
           email: { type: 'string' },
           no_telpon: { type: 'string' },
           seat: { type: 'string' },
+          extra1: { type: 'string' }, extra2: { type: 'string' }, extra3: { type: 'string' },
+          extra4: { type: 'string' }, extra5: { type: 'string' },
         },
       },
     },
@@ -355,9 +359,12 @@ module.exports = async function (fastify) {
       });
     }
 
+    const ex = (v) => (v === undefined || v === null || String(v).trim() === '') ? null : String(v).trim();
+
     const result = db.prepare(`
-      INSERT INTO peserta (project_id, nama, kode, nik, email, no_telpon, seat, section, seat_number)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO peserta (project_id, nama, kode, nik, email, no_telpon, seat, section, seat_number,
+                           extra1, extra2, extra3, extra4, extra5)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       projectId,
       row.nama,
@@ -367,7 +374,9 @@ module.exports = async function (fastify) {
       row.no_telpon,
       seat?.trim() || null,
       section,
-      seat_number
+      seat_number,
+      ex(request.body.extra1), ex(request.body.extra2), ex(request.body.extra3),
+      ex(request.body.extra4), ex(request.body.extra5)
     );
 
     log({
@@ -398,6 +407,8 @@ module.exports = async function (fastify) {
           email: { type: 'string' },
           no_telpon: { type: 'string' },
           seat: { type: 'string' },
+          extra1: { type: 'string' }, extra2: { type: 'string' }, extra3: { type: 'string' },
+          extra4: { type: 'string' }, extra5: { type: 'string' },
         },
       },
     },
@@ -439,16 +450,23 @@ module.exports = async function (fastify) {
       });
     }
 
+    const exv = (v, fallback) => (v === undefined ? fallback : (v === null || String(v).trim() === '' ? null : String(v).trim()));
+
     db.prepare(`
       UPDATE peserta SET
         nama = ?, kode = ?, nik = ?, email = ?, no_telpon = ?,
-        seat = ?, section = ?, seat_number = ?, updated_at = datetime('now','localtime')
+        seat = ?, section = ?, seat_number = ?,
+        extra1 = ?, extra2 = ?, extra3 = ?, extra4 = ?, extra5 = ?,
+        updated_at = datetime('now','localtime')
       WHERE id = ?
     `).run(
       row.nama, row.kode, row.nik, row.email, row.no_telpon,
       seat?.trim() ?? peserta.seat,
       section ?? peserta.section,
       seat_number ?? peserta.seat_number,
+      exv(request.body.extra1, peserta.extra1), exv(request.body.extra2, peserta.extra2),
+      exv(request.body.extra3, peserta.extra3), exv(request.body.extra4, peserta.extra4),
+      exv(request.body.extra5, peserta.extra5),
       id
     );
 
@@ -537,15 +555,22 @@ module.exports = async function (fastify) {
 
     // Auto-map by keyword
     const autoMapping = {};
+    // First match wins — avoids a later weak match (e.g. "KATEGORI TIKET"
+    // containing "TIKET") overwriting a strong earlier match ("KODE BOOKING").
+    const setIfEmpty = (field, idx) => {
+      if (autoMapping[field] === undefined) autoMapping[field] = idx;
+    };
     headers.forEach(h => {
       const key = h.name.toUpperCase();
-      if (key.includes('NAMA')) autoMapping.nama = h.index;
-      else if (key.includes('KODE') || key.includes('TIKET') || key.includes('BOOKING') ||
-               key.includes('BKG') || key.includes('ORDER') || key.includes('INVOICE')) autoMapping.kode = h.index;
-      else if (key.includes('NIK')) autoMapping.nik = h.index;
-      else if (key.includes('EMAIL')) autoMapping.email = h.index;
-      else if (key.includes('TELPON') || key.includes('TELP') || key.includes('PHONE') || key.includes('WHATSAPP') || key.includes('WA')) autoMapping.no_telpon = h.index;
-      else if (key.includes('SEAT') || key.includes('KURSI')) autoMapping.seat = h.index;
+      if (key.includes('NAMA')) setIfEmpty('nama', h.index);
+      else if (key.includes('KODE') || key.includes('BOOKING') || key.includes('BKG') ||
+               key.includes('ORDER') || key.includes('INVOICE')) setIfEmpty('kode', h.index);
+      else if (key.includes('TIKET') || key.includes('TICKET')) setIfEmpty('kode', h.index);
+      else if (key.includes('NIK')) setIfEmpty('nik', h.index);
+      else if (key.includes('EMAIL')) setIfEmpty('email', h.index);
+      else if (key.includes('TELPON') || key.includes('TELP') || key.includes('PHONE') ||
+               key.includes('WHATSAPP') || key.includes('WA')) setIfEmpty('no_telpon', h.index);
+      else if (key.includes('SEAT') || key.includes('KURSI')) setIfEmpty('seat', h.index);
     });
 
     // Sample rows (up to 5)
@@ -563,7 +588,7 @@ module.exports = async function (fastify) {
 
     // Load saved mapping for this project (takes precedence over auto)
     const db = getDb();
-    const saved = db.prepare('SELECT field, source_column FROM upload_mappings WHERE project_id = ?')
+    const saved = db.prepare('SELECT field, source_column, source_label FROM upload_mappings WHERE project_id = ?')
       .all(request.projectId);
     const savedMapping = {};
     saved.forEach(m => { savedMapping[m.field] = m.source_column ? Number(m.source_column) : null; });
@@ -575,11 +600,17 @@ module.exports = async function (fastify) {
     let totalRows = 0;
     ws.eachRow((row, rowNum) => { if (rowNum > 1) totalRows++; });
 
+    // Existing extra-slot labels for this project (header names chosen previously)
+    const project = db.prepare('SELECT extra_labels FROM projects WHERE id = ?').get(request.projectId);
+    let extraLabels = {};
+    try { extraLabels = JSON.parse(project?.extra_labels || '{}'); } catch { /* ignore */ }
+
     return {
       filename: data.filename,
       headers,
       samples,
       mapping: merged,
+      extra_labels: extraLabels,
       saved_mapping_exists: saved.length > 0,
       total_rows: totalRows,
     };
@@ -617,11 +648,12 @@ module.exports = async function (fastify) {
 
     // Mapping passed as JSON string in a form field 'mapping'
     let mapping = {};
+    const EXTRA_SLOTS = ['extra1', 'extra2', 'extra3', 'extra4', 'extra5'];
     try {
       const raw = fields.mapping;
       if (raw) {
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        const ALLOWED = ['nama', 'kode', 'nik', 'email', 'no_telpon', 'seat'];
+        const ALLOWED = ['nama', 'kode', 'nik', 'email', 'no_telpon', 'seat', ...EXTRA_SLOTS];
         ALLOWED.forEach(f => {
           const v = parsed[f];
           if (v === null) { mapping[f] = null; }
@@ -631,6 +663,19 @@ module.exports = async function (fastify) {
         });
       }
     } catch { return reply.code(400).send({ error: 'Format mapping tidak valid' }); }
+
+    // Labels for extra slots = the Excel header names the user mapped (per project)
+    let extraLabels = {};
+    try {
+      const rawLabels = fields.extra_labels;
+      if (rawLabels) {
+        const parsed = typeof rawLabels === 'string' ? JSON.parse(rawLabels) : rawLabels;
+        EXTRA_SLOTS.forEach(slot => {
+          const lbl = parsed?.[slot];
+          if (typeof lbl === 'string' && lbl.trim()) extraLabels[slot] = lbl.trim();
+        });
+      }
+    } catch { /* labels are optional */ }
 
     if (!mapping.nama) {
       return reply.code(400).send({ error: 'Kolom untuk Nama wajib dipetakan' });
@@ -686,6 +731,18 @@ module.exports = async function (fastify) {
         seat_number,
       };
 
+      // Custom extra columns (labels follow the uploaded headers)
+      for (const slot of EXTRA_SLOTS) {
+        if (mapping[slot]) {
+          const v = getCellValue(row, mapping[slot]);
+          rowObj[slot] = v !== null && v !== undefined && String(v).trim() !== ''
+            ? String(v).trim()
+            : null;
+        } else {
+          rowObj[slot] = null;
+        }
+      }
+
       // Require at least one identity value that is configured as unique
       const hasIdentity = uniqueFields.some(f => rowObj[f]);
       if (!hasIdentity) return; // unusable row — no identity data
@@ -733,12 +790,14 @@ module.exports = async function (fastify) {
     }
 
     const insertStmt = db.prepare(`
-      INSERT INTO peserta (project_id, nama, kode, nik, email, no_telpon, seat, section, seat_number, upload_batch_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO peserta (project_id, nama, kode, nik, email, no_telpon, seat, section, seat_number,
+                           extra1, extra2, extra3, extra4, extra5, upload_batch_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const reactivateStmt = db.prepare(`
       UPDATE peserta SET
         nama = ?, kode = ?, nik = ?, email = ?, no_telpon = ?, seat = ?, section = ?, seat_number = ?,
+        extra1 = ?, extra2 = ?, extra3 = ?, extra4 = ?, extra5 = ?,
         upload_batch_id = ?, is_active = 1, updated_at = datetime('now','localtime')
       WHERE id = ?
     `);
@@ -747,9 +806,12 @@ module.exports = async function (fastify) {
       VALUES (?, ?, ?, ?, ?, ?)
     `);
     const upsertMappingStmt = db.prepare(`
-      INSERT INTO upload_mappings (project_id, field, source_column, updated_at)
-      VALUES (?, ?, ?, datetime('now','localtime'))
-      ON CONFLICT(project_id, field) DO UPDATE SET source_column = excluded.source_column, updated_at = excluded.updated_at
+      INSERT INTO upload_mappings (project_id, field, source_column, source_label, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now','localtime'))
+      ON CONFLICT(project_id, field) DO UPDATE SET
+        source_column = excluded.source_column,
+        source_label = excluded.source_label,
+        updated_at = excluded.updated_at
     `);
 
     let reactivated = 0;
@@ -761,13 +823,17 @@ module.exports = async function (fastify) {
 
       for (const row of rows) {
         const result = insertStmt.run(
-          projectId, row.nama, row.kode, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
+          projectId, row.nama, row.kode, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number,
+          row.extra1, row.extra2, row.extra3, row.extra4, row.extra5,
+          batchId
         );
         if (result.changes > 0) inserted++;
       }
       for (const { existingId, row } of reacts) {
         const result = reactivateStmt.run(
-          row.nama, row.kode, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId, existingId
+          row.nama, row.kode, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number,
+          row.extra1, row.extra2, row.extra3, row.extra4, row.extra5,
+          batchId, existingId
         );
         if (result.changes > 0) { inserted++; reactivated++; }
       }
@@ -775,10 +841,18 @@ module.exports = async function (fastify) {
       db.prepare('UPDATE upload_batches SET inserted = ?, skipped = ? WHERE id = ?')
         .run(inserted, skipped, batchId);
 
-      // Save mapping template for this project
+      // Save mapping template (incl. header labels for extra slots)
       for (const [field, col] of Object.entries(mapping)) {
-        upsertMappingStmt.run(projectId, field, col === null ? '' : String(col));
+        upsertMappingStmt.run(projectId, field, col === null ? '' : String(col), extraLabels[field] || null);
       }
+
+      // Persist extra-slot labels on the project (merged with existing)
+      const proj = db.prepare('SELECT extra_labels FROM projects WHERE id = ?').get(projectId);
+      let merged = {};
+      try { merged = JSON.parse(proj?.extra_labels || '{}'); } catch { /* ignore */ }
+      Object.assign(merged, extraLabels);
+      db.prepare("UPDATE projects SET extra_labels = ?, updated_at = datetime('now','localtime') WHERE id = ?")
+        .run(JSON.stringify(merged), projectId);
 
       // Persist chosen unique fields as the project default
       db.prepare("UPDATE projects SET unique_fields = ?, updated_at = datetime('now','localtime') WHERE id = ?")
