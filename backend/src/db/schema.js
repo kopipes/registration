@@ -208,11 +208,11 @@ function migrateToMultiProjectInner() {
         UNIQUE(project_id, nik)
       );
     `);
-    // Copy data — include upload_batch_id only if the source table has it
+    // Copy data — preserve IDs (registrations & peserta reference them)
     const srcCols = db.pragma('table_info(peserta)').map(c => c.name);
     const hasBatchCol = srcCols.includes('upload_batch_id');
     const targetCols = [
-      'project_id', 'nama', 'nik', 'email', 'no_telpon', 'seat', 'section',
+      'id', 'project_id', 'nama', 'nik', 'email', 'no_telpon', 'seat', 'section',
       'seat_number', 'qr_code', 'is_active',
       ...(hasBatchCol ? ['upload_batch_id'] : []),
       'created_at', 'updated_at',
@@ -247,9 +247,9 @@ function migrateToMultiProjectInner() {
         );
       `);
       db.prepare(`
-        INSERT INTO upload_batches_new (project_id, filename, uploaded_by, uploaded_at,
+        INSERT INTO upload_batches_new (id, project_id, filename, uploaded_by, uploaded_at,
                                         total_rows, inserted, skipped)
-        SELECT ?, filename, uploaded_by, uploaded_at, total_rows, inserted, skipped
+        SELECT id, ?, filename, uploaded_by, uploaded_at, total_rows, inserted, skipped
         FROM upload_batches
       `).run(projectId);
       db.exec('DROP TABLE upload_batches');
