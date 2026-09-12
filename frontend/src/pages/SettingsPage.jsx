@@ -1,40 +1,23 @@
-import { useState, useRef } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, useRef, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import api from '../lib/api'
+import { useProject } from '../context/ProjectContext'
 import { useTheme, THEMES } from '../context/ThemeContext'
 
 export default function SettingsPage() {
   const qc = useQueryClient()
   const logoRef = useRef()
+  const { activeProject, refetchProjects } = useProject()
   const { currentTheme, setTheme } = useTheme()
-
-  const { data: settings = {}, isLoading } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => api.get('/settings').then(r => r.data),
-  })
 
   const [eventName, setEventName] = useState('')
   const [saveMsg, setSaveMsg] = useState('')
   const [logoMsg, setLogoMsg] = useState('')
   const [uploadingLogo, setUploadingLogo] = useState(false)
 
-  const saveMutation = useMutation({
-    mutationFn: (data) => api.put('/settings', data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['settings'] })
-      setSaveMsg('Pengaturan berhasil disimpan')
-      setTimeout(() => setSaveMsg(''), 3000)
-    },
-  })
-
-  const deleteLogoMutation = useMutation({
-    mutationFn: () => api.delete('/settings/logo'),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['settings'] })
-      setLogoMsg('Logo berhasil dihapus')
-      setTimeout(() => setLogoMsg(''), 3000)
-    },
-  })
+  useEffect(() => {
+    if (activeProject) setEventName(activeProject.event_name || '')
+  }, [activeProject])
 
   async function handleLogoUpload(e) {
     const file = e.target.files?.[0]
@@ -44,10 +27,10 @@ export default function SettingsPage() {
     try {
       const form = new FormData()
       form.append('file', file)
-      await api.post('/settings/logo', form, {
+      await api.post(`/projects/${activeProject.id}/logo`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
-      qc.invalidateQueries({ queryKey: ['settings'] })
+      refetchProjects()
       setLogoMsg('Logo berhasil diupload')
     } catch (err) {
       setLogoMsg(err.response?.data?.error || 'Upload logo gagal')
@@ -55,6 +38,17 @@ export default function SettingsPage() {
       setUploadingLogo(false)
     }
     e.target.value = ''
+  }
+
+  async function handleSaveEventName() {
+    try {
+      await api.put(`/projects/${activeProject.id}/settings`, { event_name: eventName })
+      refetchProjects()
+      setSaveMsg('Pengaturan berhasil disimpan')
+      setTimeout(() => setSaveMsg(''), 3000)
+    } catch (err) {
+      setSaveMsg(err.response?.data?.error || 'Gagal menyimpan')
+    }
   }
 
   async function handleExportLog() {
@@ -67,13 +61,13 @@ export default function SettingsPage() {
     URL.revokeObjectURL(url)
   }
 
-  if (isLoading) return <div className="page-body"><p>Memuat...</p></div>
+  if (!activeProject) return <div className="page-body"><p>Memuat project...</p></div>
 
   return (
     <>
       <div className="page-header">
-        <h1>Pengaturan</h1>
-        <p>Konfigurasi tampilan dan sistem</p>
+        <h1>Pengaturan Project</h1>
+        <p>{activeProject.name}</p>
       </div>
       <div className="page-body" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
@@ -86,19 +80,17 @@ export default function SettingsPage() {
               <label>Nama Event</label>
               <input
                 type="text"
-                placeholder={settings.event_name || 'Masukkan nama event...'}
-                defaultValue={settings.event_name || ''}
+                value={eventName}
                 onChange={e => setEventName(e.target.value)}
+                placeholder="Contoh: iQIYI Starship 2026"
               />
-              <div className="form-hint">Ditampilkan di halaman login</div>
+              <div className="form-hint">Ditampilkan di header project & halaman check-in</div>
             </div>
             <button
               className="btn btn-primary btn-sm"
-              onClick={() => saveMutation.mutate({ event_name: eventName || settings.event_name })}
-              disabled={saveMutation.isPending}
-            >
-              {saveMutation.isPending ? 'Menyimpan...' : 'Simpan'}
-            </button>
+              onClick={handleSaveEventName}
+              disabled={!eventName.trim()}
+            >Simpan</button>
           </div>
         </div>
 
@@ -107,7 +99,7 @@ export default function SettingsPage() {
           <div className="card-header"><h2>Tema Warna</h2></div>
           <div className="card-body">
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 16 }}>
-              Pilih warna tema yang sesuai dengan identitas brand event Anda. Perubahan langsung diterapkan.
+              Tema tersimpan per project — project lain tidak terpengaruh.
             </p>
 
             <p style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 10 }}>Dark Themes</p>
@@ -146,41 +138,30 @@ export default function SettingsPage() {
 
         {/* Logo */}
         <div className="card">
-          <div className="card-header"><h2>Logo Event</h2></div>
+          <div className="card-header"><h2>Logo Project</h2></div>
           <div className="card-body">
             {logoMsg && <div className={`alert ${logoMsg.includes('gagal') ? 'alert-danger' : 'alert-success'}`}>{logoMsg}</div>}
 
-            {settings.logo_url && (
+            {activeProject.logo_url && (
               <div style={{ marginBottom: 16 }}>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 8 }}>Logo saat ini:</p>
                 <img
-                  src={settings.logo_url}
+                  src={activeProject.logo_url}
                   alt="Logo"
                   style={{ maxHeight: 80, maxWidth: 200, objectFit: 'contain', border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}
                 />
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button
-                className="btn btn-outline btn-sm"
-                onClick={() => logoRef.current?.click()}
-                disabled={uploadingLogo}
-              >
-                {uploadingLogo ? 'Mengupload...' : settings.logo_url ? 'Ganti Logo' : 'Upload Logo'}
-              </button>
-              {settings.logo_url && (
-                <button
-                  className="btn btn-danger btn-sm"
-                  onClick={() => { if (confirm('Hapus logo?')) deleteLogoMutation.mutate() }}
-                  disabled={deleteLogoMutation.isPending}
-                >
-                  Hapus Logo
-                </button>
-              )}
-            </div>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => logoRef.current?.click()}
+              disabled={uploadingLogo}
+            >
+              {uploadingLogo ? 'Mengupload...' : activeProject.logo_url ? 'Ganti Logo' : 'Upload Logo'}
+            </button>
             <div className="form-hint" style={{ marginTop: 8 }}>
-              Format: PNG, JPG, SVG, atau WebP. Maks 10MB.
+              Format: PNG, JPG, SVG, atau WebP. Maks 10MB. Logo muncul di halaman pilih project, sidebar, dan check-in.
             </div>
             <input
               ref={logoRef}
@@ -197,7 +178,7 @@ export default function SettingsPage() {
           <div className="card-header"><h2>Audit Log</h2></div>
           <div className="card-body">
             <p style={{ fontSize: '0.875rem', marginBottom: 12 }}>
-              Export seluruh log aktivitas sistem ke file Excel.
+              Export log aktivitas project ini ke file Excel.
             </p>
             <button className="btn btn-outline btn-sm" onClick={handleExportLog}>
               Export Log (.xlsx)

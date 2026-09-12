@@ -1,8 +1,9 @@
 import { useState, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../lib/api'
-import { useLogo } from '../hooks/useLogo'
+
 import { useAuth } from '../context/AuthContext'
+import { useProject } from '../context/ProjectContext'
 import { getSectionStyle } from '../lib/sectionColor'
 import Pagination from '../components/Pagination'
 
@@ -18,7 +19,8 @@ function useDebounce(fn, delay) {
 
 export default function CheckinPage() {
   const { user } = useAuth()
-  const logoUrl = useLogo()
+  const { activeProject } = useProject()
+  const logoUrl = activeProject?.logo_url
   const qc = useQueryClient()
 
   const [query, setQuery] = useState('')

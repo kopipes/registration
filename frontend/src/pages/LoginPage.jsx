@@ -23,7 +23,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       await login(form.username.trim(), form.password)
-      navigate('/')
+      navigate('/projects')
     } catch (err) {
       setError(err.response?.data?.error || 'Login gagal. Periksa username dan password.')
     } finally {
@@ -36,22 +36,13 @@ export default function LoginPage() {
       <div className="login-bg-shapes" />
       <div className="login-card-wrap">
         <div className="login-card">
-          {settings?.logo_url
-            ? (
-              <div className="login-logo-wrap">
-                <img src={settings.logo_url} alt="Logo" className="login-logo" />
-              </div>
-            )
-            : (
-              <div className="login-logo-wrap">
-                <div className="login-icon">🎫</div>
-              </div>
-            )
-          }
-          <div className="login-title">
-            {settings?.event_name || 'Event Check-in'}
+          <div className="login-logo-wrap">
+            <div className="login-icon">🎫</div>
           </div>
-          <div className="login-sub">Sistem Registrasi Peserta</div>
+          <div className="login-title">
+            {settings?.event_name || 'Event Registration'}
+          </div>
+          <div className="login-sub">Sistem Registrasi Pengunjung</div>
 
           {error && <div className="alert alert-danger">{error}</div>}
 

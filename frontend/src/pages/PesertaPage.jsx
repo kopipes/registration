@@ -17,6 +17,7 @@ export default function PesertaPage() {
   const [page, setPage] = useState(1)
   const [modal, setModal] = useState(null)
   const [uploadResult, setUploadResult] = useState(null)
+  const [uploading, setUploading] = useState(false)
   const [selected, setSelected] = useState(new Set())
   const fileRef = useRef()
   const searchTimer = useRef()
@@ -101,19 +102,35 @@ export default function PesertaPage() {
     const file = e.target.files?.[0]
     if (!file) return
     setUploadResult(null)
-    const form = new FormData()
-    form.append('file', file)
+    setUploading(true)
     try {
-      const res = await api.post('/peserta/upload', form, {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await api.post('/peserta/upload/preview', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
-      setUploadResult({ success: true, ...res.data })
-      qc.invalidateQueries({ queryKey: ['peserta-admin'] })
-      qc.invalidateQueries({ queryKey: ['batches'] })
+      // Open mapping modal with preview data + the file for final import
+      setModal({ type: 'upload-mapping', preview: res.data, file })
     } catch (err) {
-      setUploadResult({ success: false, error: err.response?.data?.error || 'Upload gagal' })
+      setUploadResult({ success: false, error: err.response?.data?.error || 'Gagal membaca file' })
+    } finally {
+      setUploading(false)
     }
     e.target.value = ''
+  }
+
+  async function performImport(mapping) {
+    const { file } = modal
+    const form = new FormData()
+    form.append('file', file)
+    form.append('mapping', JSON.stringify(mapping))
+    const res = await api.post('/peserta/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    setUploadResult({ success: true, ...res.data })
+    qc.invalidateQueries({ queryKey: ['peserta-admin'] })
+    qc.invalidateQueries({ queryKey: ['batches'] })
+    setModal(null)
   }
 
   async function handleExport() {
@@ -429,6 +446,14 @@ export default function PesertaPage() {
         )}
       </div>
 
+      {modal?.type === 'upload-mapping' && (
+        <UploadMappingModal
+          preview={modal.preview}
+          onClose={() => setModal(null)}
+          onImport={performImport}
+          importing={uploading}
+        />
+      )}
       {modal?.type === 'bulk-edit' && (
         <BulkEditModal
           count={selectedCount}
@@ -555,6 +580,114 @@ function PesertaFormModal({ peserta, onClose, onSaved }) {
             <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Menyimpan...' : 'Simpan'}</button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+const IMPORT_FIELDS = [
+  { key: 'nama',      label: 'Nama Lengkap', required: true },
+  { key: 'nik',       label: 'NIK',          required: true },
+  { key: 'email',     label: 'Email',        required: false },
+  { key: 'no_telpon', label: 'No. Telepon',  required: false },
+  { key: 'seat',      label: 'Seat / Kursi', required: false },
+]
+
+function UploadMappingModal({ preview, onClose, onImport, importing }) {
+  const [mapping, setMapping] = useState(() => {
+    const m = {}
+    IMPORT_FIELDS.forEach(f => {
+      m[f.key] = preview.mapping?.[f.key] ?? null
+    })
+    return m
+  })
+  const [error, setError] = useState('')
+
+  function setField(key, value) {
+    setMapping(prev => ({ ...prev, [key]: value === '' ? null : Number(value) }))
+  }
+
+  const namaOk = !!mapping.nama
+  const nikOk = !!mapping.nik
+  const canImport = namaOk && nikOk && !importing
+
+  function handleImport() {
+    if (!namaOk || !nikOk) {
+      return setError('Kolom Nama dan NIK wajib dipetakan')
+    }
+    setError('')
+    onImport(mapping)
+  }
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 640 }}>
+        <div className="modal-header">
+          <h3>Petakan Kolom Excel</h3>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-warning" style={{ marginBottom: 16 }}>
+            File: <strong>{preview.filename}</strong> — {preview.total_rows} baris.
+            {preview.saved_mapping_exists
+              ? ' Mapping tersimpan untuk project ini sudah diterapkan.'
+              : ' Cocokkan kolom Excel ke field sistem di bawah.'}
+          </div>
+
+          {error && <div className="alert alert-danger">{error}</div>}
+
+          <div className="mapping-table">
+            <div className="mapping-row mapping-head">
+              <div>Field Sistem</div>
+              <div>Kolom Excel</div>
+            </div>
+            {IMPORT_FIELDS.map(f => (
+              <div key={f.key} className="mapping-row">
+                <div className="mapping-label">
+                  {f.label}
+                  {f.required && <span style={{ color: 'var(--danger)' }}> *</span>}
+                </div>
+                <select
+                  value={mapping[f.key] ?? ''}
+                  onChange={e => setField(f.key, e.target.value)}
+                  className={f.required && !mapping[f.key] ? 'error' : ''}
+                >
+                  <option value="">— Abaikan —</option>
+                  {preview.headers.map(h => (
+                    <option key={h.index} value={h.index}>{h.name}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          {/* Sample preview */}
+          {preview.samples?.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <p style={{ fontSize: '0.78rem', fontWeight: 600, marginBottom: 8 }}>Contoh data:</p>
+              <div className="table-wrapper">
+                <table style={{ fontSize: '0.75rem' }}>
+                  <thead>
+                    <tr>{preview.headers.map(h => <th key={h.index}>{h.name}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {preview.samples.map((row, i) => (
+                      <tr key={i}>
+                        {row.map((cell, j) => <td key={j}>{cell || '—'}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-outline" onClick={onClose} disabled={importing}>Batal</button>
+          <button className="btn btn-primary" onClick={handleImport} disabled={!canImport}>
+            {importing ? 'Mengimpor...' : `Import ${preview.total_rows} Baris`}
+          </button>
+        </div>
       </div>
     </div>
   )

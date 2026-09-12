@@ -5,7 +5,7 @@ const { log } = require('../services/audit');
 const path = require('path');
 
 module.exports = async function (fastify) {
-  // GET /api/peserta — universal search
+  // GET /api/peserta — universal search (scoped to project)
   fastify.get('/', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -24,6 +24,7 @@ module.exports = async function (fastify) {
   }, async (request) => {
     const db = getDb();
     const { q, section, status, batch_id, limit = 50, offset = 0 } = request.query;
+    const projectId = request.projectId;
 
     let query = `
       SELECT
@@ -42,9 +43,9 @@ module.exports = async function (fastify) {
         )
       LEFT JOIN users ru ON ru.id = r.registered_by
       LEFT JOIN users cu ON cu.id = r.cancelled_by
-      WHERE p.is_active = 1
+      WHERE p.is_active = 1 AND p.project_id = ?
     `;
-    const params = [];
+    const params = [projectId];
 
     if (q && q.trim()) {
       const term = `%${q.trim()}%`;
@@ -77,7 +78,6 @@ module.exports = async function (fastify) {
       query += ' AND r.id IS NULL';
     }
 
-    // Count total
     const countQuery = `SELECT COUNT(*) as total FROM (${query})`;
     const { total } = db.prepare(countQuery).get(...params);
 
@@ -94,7 +94,7 @@ module.exports = async function (fastify) {
     };
   });
 
-  // GET /api/peserta/batches — list upload batches (only ones with actual data)
+  // GET /api/peserta/batches — list upload batches (scoped)
   fastify.get('/batches', {
     onRequest: [fastify.authenticate],
   }, async (request) => {
@@ -109,13 +109,13 @@ module.exports = async function (fastify) {
         (SELECT COUNT(*) FROM peserta p WHERE p.upload_batch_id = b.id AND p.is_active = 1) AS active_peserta
       FROM upload_batches b
       LEFT JOIN users u ON u.id = b.uploaded_by
-      WHERE b.total_rows > 0
+      WHERE b.total_rows > 0 AND b.project_id = ?
       ORDER BY b.uploaded_at DESC
-    `).all();
+    `).all(request.projectId);
     return batches;
   });
 
-  // DELETE /api/peserta/batches/:id — remove all peserta in a batch
+  // DELETE /api/peserta/batches/:id — remove all peserta in a batch (scoped)
   fastify.delete('/batches/:id', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -128,10 +128,10 @@ module.exports = async function (fastify) {
 
     const db = getDb();
     const batchId = Number(request.params.id);
-    const batch = db.prepare('SELECT * FROM upload_batches WHERE id = ?').get(batchId);
+    const batch = db.prepare('SELECT * FROM upload_batches WHERE id = ? AND project_id = ?')
+      .get(batchId, request.projectId);
     if (!batch) return reply.code(404).send({ error: 'Batch tidak ditemukan' });
 
-    // Soft-delete all active peserta in this batch
     const result = db.prepare(
       "UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE upload_batch_id = ? AND is_active = 1"
     ).run(batchId);
@@ -142,6 +142,7 @@ module.exports = async function (fastify) {
       action: 'DELETE_BATCH',
       entity: 'upload_batches',
       entityId: batchId,
+      projectId: request.projectId,
       detail: { filename: batch.filename, removed: result.changes },
       ipAddress: request.ip,
     });
@@ -172,14 +173,14 @@ module.exports = async function (fastify) {
         )
       LEFT JOIN users ru ON ru.id = r.registered_by
       LEFT JOIN users cu ON cu.id = r.cancelled_by
-      WHERE p.id = ? AND p.is_active = 1
-    `).get(Number(request.params.id));
+      WHERE p.id = ? AND p.is_active = 1 AND p.project_id = ?
+    `).get(Number(request.params.id), request.projectId);
 
     if (!row) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
     return maskNik(row, request.user.role);
   });
 
-  // POST /api/peserta/bulk-update — bulk edit multiple peserta (Admin only)
+  // POST /api/peserta/bulk-update — bulk edit (Admin only, scoped)
   fastify.post('/bulk-update', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -211,7 +212,6 @@ module.exports = async function (fastify) {
       return reply.code(400).send({ error: 'Minimal satu field untuk update (section atau seat)' });
     }
 
-    // Resolve final seat/section values
     let finalSeat = seat || null;
     let finalSection = section || null;
     let finalSeatNumber = null;
@@ -219,9 +219,6 @@ module.exports = async function (fastify) {
       const parsed = parseSeat(finalSeat);
       finalSection = parsed.section;
       finalSeatNumber = parsed.seat_number;
-    } else if (finalSection) {
-      finalSeat = null; // section-only update, keep each peserta's seat number untouched? No —
-      // if only section given without seat, we just update the section label
     }
 
     const updateStmt = db.prepare(`
@@ -230,13 +227,13 @@ module.exports = async function (fastify) {
         section = COALESCE(?, section),
         seat_number = COALESCE(?, seat_number),
         updated_at = datetime('now')
-      WHERE id = ? AND is_active = 1
+      WHERE id = ? AND is_active = 1 AND project_id = ?
     `);
 
     const runBulk = db.transaction((idList) => {
       let updated = 0;
       for (const id of idList) {
-        const res = updateStmt.run(finalSeat, finalSection, finalSeatNumber, id);
+        const res = updateStmt.run(finalSeat, finalSection, finalSeatNumber, id, request.projectId);
         if (res.changes > 0) updated++;
       }
       return updated;
@@ -249,6 +246,7 @@ module.exports = async function (fastify) {
       username: request.user.username,
       action: 'BULK_EDIT_PESERTA',
       entity: 'peserta',
+      projectId: request.projectId,
       detail: { count: updated, section, seat, ids: ids.slice(0, 50) },
       ipAddress: request.ip,
     });
@@ -256,7 +254,7 @@ module.exports = async function (fastify) {
     return { message: `${updated} peserta berhasil diupdate`, updated };
   });
 
-  // POST /api/peserta/bulk-delete — bulk remove (soft delete, Admin only)
+  // POST /api/peserta/bulk-delete — bulk remove (Admin only, scoped)
   fastify.post('/bulk-delete', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -277,13 +275,13 @@ module.exports = async function (fastify) {
     const { ids } = request.body;
 
     const deleteStmt = db.prepare(
-      "UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE id = ? AND is_active = 1"
+      "UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE id = ? AND is_active = 1 AND project_id = ?"
     );
 
     const runBulk = db.transaction((idList) => {
       let deleted = 0;
       for (const id of idList) {
-        const res = deleteStmt.run(id);
+        const res = deleteStmt.run(id, request.projectId);
         if (res.changes > 0) deleted++;
       }
       return deleted;
@@ -296,6 +294,7 @@ module.exports = async function (fastify) {
       username: request.user.username,
       action: 'BULK_DELETE_PESERTA',
       entity: 'peserta',
+      projectId: request.projectId,
       detail: { count: deleted, ids: ids.slice(0, 50) },
       ipAddress: request.ip,
     });
@@ -303,7 +302,7 @@ module.exports = async function (fastify) {
     return { message: `${deleted} peserta berhasil dihapus`, deleted };
   });
 
-  // POST /api/peserta — add manual (Admin only)
+  // POST /api/peserta — add manual (Admin only, scoped)
   fastify.post('/', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -328,14 +327,15 @@ module.exports = async function (fastify) {
     const { nama, nik, email, no_telpon, seat } = request.body;
     const { section, seat_number } = parseSeat(seat);
 
-    // Check duplicate NIK
-    const existing = db.prepare('SELECT id FROM peserta WHERE nik = ?').get(nik.trim());
-    if (existing) return reply.code(409).send({ error: 'NIK sudah terdaftar' });
+    const existing = db.prepare('SELECT id FROM peserta WHERE nik = ? AND project_id = ?')
+      .get(nik.trim(), request.projectId);
+    if (existing) return reply.code(409).send({ error: 'NIK sudah terdaftar di project ini' });
 
     const result = db.prepare(`
-      INSERT INTO peserta (nama, nik, email, no_telpon, seat, section, seat_number)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO peserta (project_id, nama, nik, email, no_telpon, seat, section, seat_number)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
+      request.projectId,
       nama.trim(),
       nik.trim(),
       email?.trim() || null,
@@ -351,6 +351,7 @@ module.exports = async function (fastify) {
       action: 'ADD_PESERTA',
       entity: 'peserta',
       entityId: result.lastInsertRowid,
+      projectId: request.projectId,
       detail: { nama, nik },
       ipAddress: request.ip,
     });
@@ -358,7 +359,7 @@ module.exports = async function (fastify) {
     return { id: result.lastInsertRowid, message: 'Peserta berhasil ditambahkan' };
   });
 
-  // PUT /api/peserta/:id — edit (Admin only)
+  // PUT /api/peserta/:id — edit (Admin only, scoped)
   fastify.put('/:id', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -381,16 +382,17 @@ module.exports = async function (fastify) {
 
     const db = getDb();
     const id = Number(request.params.id);
-    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1').get(id);
+    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1 AND project_id = ?')
+      .get(id, request.projectId);
     if (!peserta) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
 
     const { nama, nik, email, no_telpon, seat } = request.body;
     const { section, seat_number } = parseSeat(seat || peserta.seat);
 
-    // Check duplicate NIK if changed
     if (nik && nik.trim() !== peserta.nik) {
-      const existing = db.prepare('SELECT id FROM peserta WHERE nik = ? AND id != ?').get(nik.trim(), id);
-      if (existing) return reply.code(409).send({ error: 'NIK sudah digunakan peserta lain' });
+      const existing = db.prepare('SELECT id FROM peserta WHERE nik = ? AND project_id = ? AND id != ?')
+        .get(nik.trim(), request.projectId, id);
+      if (existing) return reply.code(409).send({ error: 'NIK sudah digunakan peserta lain di project ini' });
     }
 
     db.prepare(`
@@ -415,6 +417,7 @@ module.exports = async function (fastify) {
       action: 'EDIT_PESERTA',
       entity: 'peserta',
       entityId: id,
+      projectId: request.projectId,
       detail: request.body,
       ipAddress: request.ip,
     });
@@ -422,7 +425,7 @@ module.exports = async function (fastify) {
     return { message: 'Peserta berhasil diupdate' };
   });
 
-  // DELETE /api/peserta/:id — soft delete (Admin only)
+  // DELETE /api/peserta/:id — soft delete (Admin only, scoped)
   fastify.delete('/:id', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -435,7 +438,8 @@ module.exports = async function (fastify) {
 
     const db = getDb();
     const id = Number(request.params.id);
-    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1').get(id);
+    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1 AND project_id = ?')
+      .get(id, request.projectId);
     if (!peserta) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
 
     db.prepare("UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE id = ?").run(id);
@@ -446,6 +450,7 @@ module.exports = async function (fastify) {
       action: 'DELETE_PESERTA',
       entity: 'peserta',
       entityId: id,
+      projectId: request.projectId,
       detail: { nama: peserta.nama, nik: peserta.nik },
       ipAddress: request.ip,
     });
@@ -453,8 +458,8 @@ module.exports = async function (fastify) {
     return { message: 'Peserta berhasil dihapus' };
   });
 
-  // POST /api/peserta/upload — upload Excel
-  fastify.post('/upload', {
+  // POST /api/peserta/upload/preview — parse file, return headers + samples + auto-mapping (no writes)
+  fastify.post('/upload/preview', {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {
     if (request.user.role !== 'admin') {
@@ -471,103 +476,192 @@ module.exports = async function (fastify) {
 
     const ExcelJS = require('exceljs');
     const wb = new ExcelJS.Workbook();
-
-    // Read from stream
     const chunks = [];
-    for await (const chunk of data.file) {
-      chunks.push(chunk);
-    }
-    const buffer = Buffer.concat(chunks);
-    await wb.xlsx.load(buffer);
+    for await (const chunk of data.file) chunks.push(chunk);
+    await wb.xlsx.load(Buffer.concat(chunks));
 
     const ws = wb.worksheets[0];
     if (!ws) return reply.code(400).send({ error: 'Sheet tidak ditemukan di file Excel' });
 
-    // Read header row to find column indices
-    const headerRow = ws.getRow(1).values; // index 1-based
-    const colMap = {};
-    headerRow.forEach((h, i) => {
-      if (!h) return;
-      const key = String(h).trim().toUpperCase();
-      if (key.includes('NAMA')) colMap.nama = i;
-      else if (key.includes('NIK')) colMap.nik = i;
-      else if (key.includes('EMAIL')) colMap.email = i;
-      else if (key.includes('TELPON') || key.includes('TELP') || key.includes('PHONE')) colMap.no_telpon = i;
-      else if (key.includes('SEAT') || key.includes('KURSI')) colMap.seat = i;
+    // Read headers
+    const headers = [];
+    ws.getRow(1).eachCell((cell, colNumber) => {
+      if (cell.value !== null && cell.value !== undefined) {
+        headers.push({ index: colNumber, name: String(cell.value).trim() });
+      }
     });
-
-    if (!colMap.nama || !colMap.nik) {
-      return reply.code(400).send({ error: 'Kolom NAMA LENGKAP dan NO NIK wajib ada di Excel' });
+    if (headers.length === 0) {
+      return reply.code(400).send({ error: 'Baris header tidak ditemukan di baris pertama Excel' });
     }
 
+    // Auto-map by keyword
+    const autoMapping = {};
+    headers.forEach(h => {
+      const key = h.name.toUpperCase();
+      if (key.includes('NAMA')) autoMapping.nama = h.index;
+      else if (key.includes('NIK')) autoMapping.nik = h.index;
+      else if (key.includes('EMAIL')) autoMapping.email = h.index;
+      else if (key.includes('TELPON') || key.includes('TELP') || key.includes('PHONE')) autoMapping.no_telpon = h.index;
+      else if (key.includes('SEAT') || key.includes('KURSI')) autoMapping.seat = h.index;
+    });
+
+    // Sample rows (up to 5)
+    const samples = [];
+    let count = 0;
+    ws.eachRow((row, rowNum) => {
+      if (rowNum === 1 || count >= 5) return;
+      const sampleRow = [];
+      headers.forEach(h => {
+        sampleRow.push(cellToString(row.getCell(h.index).value));
+      });
+      samples.push(sampleRow);
+      count++;
+    });
+
+    // Load saved mapping for this project (takes precedence over auto)
     const db = getDb();
+    const saved = db.prepare('SELECT field, source_column FROM upload_mappings WHERE project_id = ?')
+      .all(request.projectId);
+    const savedMapping = {};
+    saved.forEach(m => { savedMapping[m.field] = m.source_column ? Number(m.source_column) : null; });
+
+    // Merged mapping: saved > auto
+    const merged = { ...autoMapping, ...savedMapping };
+
+    // Total data rows
+    let totalRows = 0;
+    ws.eachRow((row, rowNum) => { if (rowNum > 1) totalRows++; });
+
+    return {
+      filename: data.filename,
+      headers,
+      samples,
+      mapping: merged,
+      saved_mapping_exists: saved.length > 0,
+      total_rows: totalRows,
+    };
+  });
+
+  // POST /api/peserta/upload — import with explicit mapping (scoped)
+  fastify.post('/upload', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    if (request.user.role !== 'admin') {
+      return reply.code(403).send({ error: 'Hanya Admin yang bisa upload data' });
+    }
+
+    // Parse multipart parts: file + optional mapping fields
+    let fileBuffer = null
+    let filename = null
+    const fields = {}
+    for await (const part of request.parts()) {
+      if (part.type === 'file') {
+        filename = part.filename
+        const chunks = []
+        for await (const chunk of part.file) chunks.push(chunk)
+        fileBuffer = Buffer.concat(chunks)
+      } else {
+        fields[part.fieldname] = part.value
+      }
+    }
+
+    if (!fileBuffer) return reply.code(400).send({ error: 'File tidak ditemukan' })
+
+    const ext = path.extname(filename || '').toLowerCase();
+    if (!['.xlsx', '.xls'].includes(ext)) {
+      return reply.code(400).send({ error: 'File harus berformat .xlsx atau .xls' });
+    }
+
+    // Mapping passed as JSON string in a form field 'mapping'
+    let mapping = {};
+    try {
+      const raw = fields.mapping;
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        ['nama', 'nik', 'email', 'no_telpon', 'seat'].forEach(f => {
+          const v = parsed[f];
+          if (v === null) { mapping[f] = null; }
+          else if (v !== undefined && Number.isInteger(Number(v)) && Number(v) > 0) {
+            mapping[f] = Number(v);
+          }
+        });
+      }
+    } catch { return reply.code(400).send({ error: 'Format mapping tidak valid' }); }
+
+    if (!mapping.nama || !mapping.nik) {
+      return reply.code(400).send({ error: 'Kolom untuk Nama dan NIK wajib dipetakan' });
+    }
+
+    const ExcelJS = require('exceljs');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(fileBuffer);
+
+    const ws = wb.worksheets[0];
+    if (!ws) return reply.code(400).send({ error: 'Sheet tidak ditemukan di file Excel' });
+
+    const db = getDb();
+    const projectId = request.projectId;
 
     let inserted = 0;
     let skipped = 0;
     const rowsToInsert = [];
 
     ws.eachRow((row, rowNum) => {
-      if (rowNum === 1) return; // skip header
-      const nama = getCellValue(row, colMap.nama);
-      const nik = getCellValue(row, colMap.nik);
+      if (rowNum === 1) return;
+      const nama = mapping.nama ? getCellValue(row, mapping.nama) : null;
+      const nik = mapping.nik ? getCellValue(row, mapping.nik) : null;
       if (!nama || !nik) return;
 
-      const seat = colMap.seat ? getCellValue(row, colMap.seat) : null;
+      const seat = mapping.seat ? getCellValue(row, mapping.seat) : null;
       const { section, seat_number } = parseSeat(seat);
 
       rowsToInsert.push({
         nama: String(nama).trim(),
         nik: String(nik).trim(),
-        email: colMap.email ? getCellValue(row, colMap.email) || null : null,
-        no_telpon: colMap.no_telpon ? getCellValue(row, colMap.no_telpon) || null : null,
+        email: mapping.email ? getCellValue(row, mapping.email) || null : null,
+        no_telpon: mapping.no_telpon ? getCellValue(row, mapping.no_telpon) || null : null,
         seat: seat ? String(seat).trim() : null,
         section,
         seat_number,
       });
     });
 
-    // Pre-fetch ALL peserta by NIK (including soft-deleted — they still hold the UNIQUE constraint)
+    if (rowsToInsert.length === 0) {
+      return reply.code(400).send({ error: 'Tidak ada baris valid ditemukan (kolom Nama/NIK kosong?)' });
+    }
+
+    // Pre-fetch ALL peserta in this project by NIK (incl. soft-deleted — UNIQUE constraint)
     const allByNik = new Map(
-      db.prepare('SELECT id, nik, email, is_active FROM peserta').all().map(r => [r.nik, r])
+      db.prepare('SELECT id, nik, email, is_active FROM peserta WHERE project_id = ?').all(projectId)
+        .map(r => [r.nik, r])
     );
-    // Active emails — duplicates among active rows are skipped
     const existingEmails = new Set(
-      db.prepare('SELECT LOWER(email) AS e FROM peserta WHERE is_active = 1 AND email IS NOT NULL').all().map(r => r.e)
+      db.prepare('SELECT LOWER(email) AS e FROM peserta WHERE project_id = ? AND is_active = 1 AND email IS NOT NULL')
+        .all(projectId).map(r => r.e)
     );
 
-    // Classify rows:
-    //  - NIK exists & active      → skip (data tidak tertimpa)
-    //  - Email matches active row → skip
-    //  - NIK exists but soft-deleted → REACTIVATE with new data (re-upload after batch removal)
-    //  - Otherwise                 → insert new
     const newRows = [];
-    const reactivations = []; // { existingId, row }
+    const reactivations = [];
     for (const row of rowsToInsert) {
       const emailKey = row.email ? String(row.email).trim().toLowerCase() : null;
       const existing = allByNik.get(row.nik);
 
-      if (existing && existing.is_active === 1) {
-        skipped++; continue; // active duplicate NIK
-      }
-      if (emailKey && existingEmails.has(emailKey)) {
-        skipped++; continue; // active duplicate email
-      }
+      if (existing && existing.is_active === 1) { skipped++; continue; }
+      if (emailKey && existingEmails.has(emailKey)) { skipped++; continue; }
 
       if (existing && existing.is_active === 0) {
-        // soft-deleted row with same NIK — reactivate with fresh data
         reactivations.push({ existingId: existing.id, row });
       } else {
         newRows.push(row);
       }
-      // Track for intra-file duplicate detection
       if (emailKey) existingEmails.add(emailKey);
       if (existing) { existing.is_active = 1; existing.email = emailKey; }
       else allByNik.set(row.nik, { id: null, nik: row.nik, email: emailKey, is_active: 1 });
     }
 
     const insertStmt = db.prepare(`
-      INSERT INTO peserta (nama, nik, email, no_telpon, seat, section, seat_number, upload_batch_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO peserta (project_id, nama, nik, email, no_telpon, seat, section, seat_number, upload_batch_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const reactivateStmt = db.prepare(`
       UPDATE peserta SET
@@ -576,21 +670,25 @@ module.exports = async function (fastify) {
       WHERE id = ?
     `);
     const createBatchStmt = db.prepare(`
-      INSERT INTO upload_batches (filename, uploaded_by, total_rows, inserted, skipped)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO upload_batches (project_id, filename, uploaded_by, total_rows, inserted, skipped)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const upsertMappingStmt = db.prepare(`
+      INSERT INTO upload_mappings (project_id, field, source_column, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(project_id, field) DO UPDATE SET source_column = excluded.source_column, updated_at = excluded.updated_at
     `);
 
     let reactivated = 0;
     let batchId = null;
     const insertMany = db.transaction((rows, reacts) => {
-      // Batch created inside the transaction — no ghost rows if anything fails
       batchId = createBatchStmt.run(
-        data.filename, request.user.id, rowsToInsert.length, 0, 0
+        projectId, filename, request.user.id, rowsToInsert.length, 0, 0
       ).lastInsertRowid;
 
       for (const row of rows) {
         const result = insertStmt.run(
-          row.nama, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
+          projectId, row.nama, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
         );
         if (result.changes > 0) inserted++;
       }
@@ -601,9 +699,13 @@ module.exports = async function (fastify) {
         if (result.changes > 0) { inserted++; reactivated++; }
       }
 
-      // Update batch stats in same transaction
       db.prepare('UPDATE upload_batches SET inserted = ?, skipped = ? WHERE id = ?')
         .run(inserted, skipped, batchId);
+
+      // Save mapping template for this project
+      for (const [field, col] of Object.entries(mapping)) {
+        upsertMappingStmt.run(projectId, field, col === null ? '' : String(col));
+      }
     });
 
     insertMany(newRows, reactivations);
@@ -614,7 +716,8 @@ module.exports = async function (fastify) {
       action: 'UPLOAD_EXCEL',
       entity: 'peserta',
       entityId: batchId,
-      detail: { filename: data.filename, batch_id: batchId, inserted, reactivated, skipped, total: rowsToInsert.length },
+      projectId,
+      detail: { filename, batch_id: batchId, inserted, reactivated, skipped, total: rowsToInsert.length, mapping },
       ipAddress: request.ip,
     });
 
@@ -646,6 +749,13 @@ function getCellValue(row, colIndex) {
   if (cell.value === null || cell.value === undefined) return null;
   if (typeof cell.value === 'object' && cell.value.text) return cell.value.text;
   return cell.value;
+}
+
+function cellToString(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object' && value.text) return String(value.text);
+  if (typeof value === 'object' && value.result !== undefined) return String(value.result);
+  return String(value);
 }
 
 function maskNik(row, role) {

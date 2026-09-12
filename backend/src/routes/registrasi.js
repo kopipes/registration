@@ -44,7 +44,7 @@ module.exports = async function (fastify) {
     const db = getDb();
     const pesertaId = Number(request.params.id);
 
-    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1').get(pesertaId);
+    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1 AND project_id = ?').get(pesertaId, request.projectId);
     if (!peserta) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
 
     // Check if already registered (last status = registered)
@@ -67,6 +67,7 @@ module.exports = async function (fastify) {
       action: 'CHECKIN',
       entity: 'peserta',
       entityId: pesertaId,
+      projectId: request.projectId,
       detail: { peserta_nama: peserta.nama, peserta_nik: peserta.nik },
       ipAddress: request.ip,
     });
@@ -89,7 +90,7 @@ module.exports = async function (fastify) {
     const pesertaId = Number(request.params.id);
     const reason = request.body?.reason || null;
 
-    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1').get(pesertaId);
+    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1 AND project_id = ?').get(pesertaId, request.projectId);
     if (!peserta) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
 
     const lastReg = db.prepare(`
@@ -112,6 +113,7 @@ module.exports = async function (fastify) {
       action: 'UNREGISTER',
       entity: 'peserta',
       entityId: pesertaId,
+      projectId: request.projectId,
       detail: { peserta_nama: peserta.nama, peserta_nik: peserta.nik, reason },
       ipAddress: request.ip,
     });
@@ -129,7 +131,7 @@ module.exports = async function (fastify) {
     const db = getDb();
     const pesertaId = Number(request.params.id);
 
-    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ?').get(pesertaId);
+    const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND project_id = ?').get(pesertaId, request.projectId);
     if (!peserta) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
 
     const history = db.prepare(`

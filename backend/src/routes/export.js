@@ -33,9 +33,9 @@ module.exports = async function (fastify) {
           ORDER BY r.created_at DESC LIMIT 1
         ) AS registered_by_name
       FROM peserta p
-      WHERE p.is_active = 1
+      WHERE p.is_active = 1 AND p.project_id = ?
       ORDER BY p.section ASC, p.seat_number ASC, p.nama ASC
-    `).all();
+    `).all(request.projectId);
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Event Check-in System';
@@ -98,8 +98,8 @@ module.exports = async function (fastify) {
 
     const db = getDb();
     const rows = db.prepare(
-      'SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 5000'
-    ).all();
+      'SELECT * FROM audit_log WHERE project_id = ? OR project_id IS NULL ORDER BY created_at DESC LIMIT 5000'
+    ).all(request.projectId);
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Audit Log');

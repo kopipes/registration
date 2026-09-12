@@ -5,7 +5,7 @@ require('dotenv').config();
 const fastify = require('fastify')({ logger: true });
 const path = require('path');
 const fs = require('fs');
-const { initDb } = require('./db/schema');
+const { initDb, getDb } = require('./db/schema');
 const { setupBackup } = require('./services/backup');
 
 const PORT = process.env.PORT || 3000;
@@ -20,6 +20,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 async function start() {
   // Init database
   initDb(path.resolve(DB_PATH));
+  const db = getDb();
 
   // Plugins
   await fastify.register(require('@fastify/cors'), {
@@ -60,8 +61,42 @@ async function start() {
     };
   });
 
+  // Project scoping: validate X-Project-Id header, attach request.projectId.
+  // Public routes (login, projects list) skip this via options.config.skipProject.
+  fastify.addHook('onRequest', async (request, reply) => {
+    // Only scope /api routes that need it
+    const url = request.url.split('?')[0];
+    if (!url.startsWith('/api/')) return;
+
+    // Skip project requirement for these paths
+    const skipPaths = [
+      '/api/auth', '/api/health',
+      '/api/projects', '/api/projects/',
+    ];
+    if (skipPaths.some(p => url === p || url.startsWith(p + '/'))) return;
+    // /api/projects itself needs scoping only for nested mutations — handled in route
+
+    const headerValue = request.headers['x-project-id'];
+    if (!headerValue) {
+      return reply.code(400).send({ error: 'Project tidak dipilih (X-Project-Id header wajib)' });
+    }
+    const projectId = Number(headerValue);
+    if (!Number.isInteger(projectId) || projectId <= 0) {
+      return reply.code(400).send({ error: 'X-Project-Id tidak valid' });
+    }
+    const project = db.prepare('SELECT id, status FROM projects WHERE id = ?').get(projectId);
+    if (!project) {
+      return reply.code(404).send({ error: 'Project tidak ditemukan' });
+    }
+    if (project.status === 'archived') {
+      return reply.code(403).send({ error: 'Project sudah diarsipkan' });
+    }
+    request.projectId = projectId;
+  });
+
   // Routes
   await fastify.register(require('./routes/auth'), { prefix: '/api/auth' });
+  await fastify.register(require('./routes/projects'), { prefix: '/api/projects' });
   await fastify.register(require('./routes/peserta'), { prefix: '/api/peserta' });
   await fastify.register(require('./routes/registrasi'), { prefix: '/api/registrasi' });
   await fastify.register(require('./routes/users'), { prefix: '/api/users' });

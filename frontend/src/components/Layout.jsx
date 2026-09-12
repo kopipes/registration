@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { useLogo } from '../hooks/useLogo'
+import { useProject } from '../context/ProjectContext'
 
 const NAV_ITEMS = [
   { to: '/',        end: true,  icon: '▦', label: 'Dashboard', roles: null },
@@ -12,17 +12,25 @@ const NAV_ITEMS = [
 
 export default function Layout() {
   const { user, logout } = useAuth()
+  const { activeProject } = useProject()
   const navigate = useNavigate()
-  const logoUrl = useLogo()
 
   async function handleLogout() {
     await logout()
+    localStorage.removeItem('project_id')
     navigate('/login')
+  }
+
+  function switchProject() {
+    navigate('/projects')
   }
 
   const visibleItems = NAV_ITEMS.filter(
     item => !item.roles || item.roles.includes(user?.role)
   )
+
+  const projectLabel = activeProject?.event_name || activeProject?.name || 'Project'
+  const logoUrl = activeProject?.logo_url
 
   return (
     <div className="layout">
@@ -33,8 +41,14 @@ export default function Layout() {
             ? <img src={logoUrl} alt="Logo" className="sidebar-logo" />
             : <div style={{ fontSize: '1.5rem', marginBottom: 4 }}>🎫</div>
           }
-          <div className="sidebar-title">Event Check-in</div>
-          <div className="sidebar-subtitle">Registrasi Peserta</div>
+          <div className="sidebar-title">{projectLabel}</div>
+          <button
+            className="btn-switch-project"
+            onClick={switchProject}
+            title="Ganti project"
+          >
+            ⇄ Ganti Project
+          </button>
         </div>
 
         <nav className="sidebar-nav">
@@ -69,9 +83,9 @@ export default function Layout() {
               <span>{item.label}</span>
             </NavLink>
           ))}
-          <button className="nav-btn" onClick={handleLogout}>
-            <span className="bottom-nav-icon">⏏</span>
-            <span>Keluar</span>
+          <button className="nav-btn" onClick={switchProject}>
+            <span className="bottom-nav-icon">⇄</span>
+            <span>Project</span>
           </button>
         </div>
       </nav>
