@@ -4,6 +4,13 @@ import api from '../lib/api'
 import { useProject } from '../context/ProjectContext'
 import { useTheme, THEMES } from '../context/ThemeContext'
 
+const UNIQUE_FIELD_OPTIONS = [
+  { key: 'kode',      label: 'Kode Tiket / Booking' },
+  { key: 'nik',       label: 'NIK' },
+  { key: 'email',     label: 'Email' },
+  { key: 'no_telpon', label: 'No. Telepon' },
+]
+
 export default function SettingsPage() {
   const qc = useQueryClient()
   const logoRef = useRef()
@@ -11,13 +18,48 @@ export default function SettingsPage() {
   const { currentTheme, setTheme } = useTheme()
 
   const [eventName, setEventName] = useState('')
+  const [uniqueFields, setUniqueFields] = useState([])
   const [saveMsg, setSaveMsg] = useState('')
   const [logoMsg, setLogoMsg] = useState('')
   const [uploadingLogo, setUploadingLogo] = useState(false)
+  const [savingFields, setSavingFields] = useState(false)
 
   useEffect(() => {
-    if (activeProject) setEventName(activeProject.event_name || '')
+    if (activeProject) {
+      setEventName(activeProject.event_name || '')
+      try {
+        const parsed = JSON.parse(activeProject.unique_fields || '["nik"]')
+        setUniqueFields(Array.isArray(parsed) ? parsed : ['nik'])
+      } catch {
+        setUniqueFields(['nik'])
+      }
+    }
   }, [activeProject])
+
+  async function handleSaveUniqueFields(fields) {
+    if (fields.length === 0) {
+      setSaveMsg('Minimal satu patokan unik harus dipilih')
+      return
+    }
+    setSavingFields(true)
+    try {
+      await api.put(`/projects/${activeProject.id}/settings`, { unique_fields: fields })
+      refetchProjects()
+      setSaveMsg('Patokan unik berhasil disimpan')
+      setTimeout(() => setSaveMsg(''), 3000)
+    } catch (err) {
+      setSaveMsg(err.response?.data?.error || 'Gagal menyimpan')
+    } finally {
+      setSavingFields(false)
+    }
+  }
+
+  function toggleUniqueField(key) {
+    setUniqueFields(prev => {
+      const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+      return next
+    })
+  }
 
   async function handleLogoUpload(e) {
     const file = e.target.files?.[0]
@@ -91,6 +133,55 @@ export default function SettingsPage() {
               onClick={handleSaveEventName}
               disabled={!eventName.trim()}
             >Simpan</button>
+          </div>
+        </div>
+
+        {/* Unique identity fields */}
+        <div className="card">
+          <div className="card-header"><h2>Patokan Unik Peserta</h2></div>
+          <div className="card-body">
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 14 }}>
+              Pilih kolom yang dipakai untuk mencegah duplikasi saat import Excel.
+              Baris yang memiliki nilai sama pada salah satu patokan di bawah akan dilewati.
+            </p>
+
+            {saveMsg && <div className="alert alert-success">{saveMsg}</div>}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+              {UNIQUE_FIELD_OPTIONS.map(opt => (
+                <label
+                  key={opt.key}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '10px 12px', marginBottom: 0,
+                    border: `1.5px solid ${uniqueFields.includes(opt.key) ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 'var(--radius)',
+                    background: uniqueFields.includes(opt.key) ? '#eff6ff' : 'var(--surface)',
+                    cursor: 'pointer', fontWeight: 500,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={uniqueFields.includes(opt.key)}
+                    onChange={() => toggleUniqueField(opt.key)}
+                  />
+                  {opt.label}
+                </label>
+              ))}
+            </div>
+
+            <div className="form-hint" style={{ marginBottom: 12 }}>
+              Contoh: jika memilih <strong>Kode Tiket</strong> saja, peserta boleh punya NIK
+              yang sama asalkan kode tiketnya berbeda.
+            </div>
+
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => handleSaveUniqueFields(uniqueFields)}
+              disabled={savingFields || uniqueFields.length === 0}
+            >
+              {savingFields ? 'Menyimpan...' : 'Simpan Patokan Unik'}
+            </button>
           </div>
         </div>
 

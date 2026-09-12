@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
+import { useProject } from '../context/ProjectContext'
 import { getSectionStyle } from '../lib/sectionColor'
 import Pagination from '../components/Pagination'
 
@@ -9,6 +10,7 @@ const PAGE_SIZE = 50
 
 export default function PesertaPage() {
   const { user } = useAuth()
+  const { activeProject } = useProject()
   const qc = useQueryClient()
   const [query, setQuery] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
@@ -119,17 +121,19 @@ export default function PesertaPage() {
     e.target.value = ''
   }
 
-  async function performImport(mapping) {
+  async function performImport(mapping, uniqueFields) {
     const { file } = modal
     const form = new FormData()
     form.append('file', file)
     form.append('mapping', JSON.stringify(mapping))
+    form.append('unique_fields', JSON.stringify(uniqueFields))
     const res = await api.post('/peserta/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     setUploadResult({ success: true, ...res.data })
     qc.invalidateQueries({ queryKey: ['peserta-admin'] })
     qc.invalidateQueries({ queryKey: ['batches'] })
+    qc.invalidateQueries({ queryKey: ['projects'] })
     setModal(null)
   }
 
@@ -449,6 +453,7 @@ export default function PesertaPage() {
       {modal?.type === 'upload-mapping' && (
         <UploadMappingModal
           preview={modal.preview}
+          activeProject={activeProject}
           onClose={() => setModal(null)}
           onImport={performImport}
           importing={uploading}
@@ -542,7 +547,7 @@ function BulkDeleteModal({ count, loading, error, onConfirm, onClose }) {
 
 function PesertaFormModal({ peserta, onClose, onSaved }) {
   const [form, setForm] = useState({
-    nama: peserta?.nama || '', nik: peserta?.nik || '',
+    nama: peserta?.nama || '', kode: peserta?.kode || '', nik: peserta?.nik || '',
     email: peserta?.email || '', no_telpon: peserta?.no_telpon || '', seat: peserta?.seat || '',
   })
   const [error, setError] = useState('')
@@ -570,7 +575,8 @@ function PesertaFormModal({ peserta, onClose, onSaved }) {
           <div className="modal-body">
             {error && <div className="alert alert-danger">{error}</div>}
             <div className="form-group"><label>Nama Lengkap *</label><input value={form.nama} onChange={e => setForm(f => ({ ...f, nama: e.target.value }))} required /></div>
-            <div className="form-group"><label>NIK *</label><input value={form.nik} onChange={e => setForm(f => ({ ...f, nik: e.target.value }))} required /></div>
+            <div className="form-group"><label>Kode Tiket / Booking</label><input value={form.kode} onChange={e => setForm(f => ({ ...f, kode: e.target.value }))} placeholder="Opsional" /></div>
+            <div className="form-group"><label>NIK</label><input value={form.nik} onChange={e => setForm(f => ({ ...f, nik: e.target.value }))} placeholder="Opsional" /></div>
             <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} /></div>
             <div className="form-group"><label>No. Telepon</label><input value={form.no_telpon} onChange={e => setForm(f => ({ ...f, no_telpon: e.target.value }))} /></div>
             <div className="form-group"><label>Seat</label><input value={form.seat} onChange={e => setForm(f => ({ ...f, seat: e.target.value }))} placeholder="BLUE - 001" /></div>
@@ -586,14 +592,22 @@ function PesertaFormModal({ peserta, onClose, onSaved }) {
 }
 
 const IMPORT_FIELDS = [
-  { key: 'nama',      label: 'Nama Lengkap', required: true },
-  { key: 'nik',       label: 'NIK',          required: true },
-  { key: 'email',     label: 'Email',        required: false },
-  { key: 'no_telpon', label: 'No. Telepon',  required: false },
-  { key: 'seat',      label: 'Seat / Kursi', required: false },
+  { key: 'nama',      label: 'Nama Lengkap',   required: true },
+  { key: 'kode',      label: 'Kode Tiket/Booking', required: false },
+  { key: 'nik',       label: 'NIK',            required: false },
+  { key: 'email',     label: 'Email',          required: false },
+  { key: 'no_telpon', label: 'No. Telepon',    required: false },
+  { key: 'seat',      label: 'Seat / Kursi',   required: false },
 ]
 
-function UploadMappingModal({ preview, onClose, onImport, importing }) {
+const UNIQUE_FIELD_OPTIONS = [
+  { key: 'kode',      label: 'Kode Tiket / Booking' },
+  { key: 'nik',       label: 'NIK' },
+  { key: 'email',     label: 'Email' },
+  { key: 'no_telpon', label: 'No. Telepon' },
+]
+
+function UploadMappingModal({ preview, onClose, onImport, importing, activeProject }) {
   const [mapping, setMapping] = useState(() => {
     const m = {}
     IMPORT_FIELDS.forEach(f => {
@@ -601,22 +615,40 @@ function UploadMappingModal({ preview, onClose, onImport, importing }) {
     })
     return m
   })
+  const [uniqueFields, setUniqueFields] = useState(() => {
+    // Seed from project config; keep only fields that make sense as identity
+    try {
+      const parsed = JSON.parse(activeProject?.unique_fields || '["nik"]')
+      return Array.isArray(parsed) && parsed.length ? parsed : ['nik']
+    } catch { return ['nik'] }
+  })
   const [error, setError] = useState('')
 
   function setField(key, value) {
     setMapping(prev => ({ ...prev, [key]: value === '' ? null : Number(value) }))
   }
 
+  function toggleUnique(key) {
+    setUniqueFields(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    )
+  }
+
   const namaOk = !!mapping.nama
-  const nikOk = !!mapping.nik
-  const canImport = namaOk && nikOk && !importing
+  // Every selected unique field must be mapped to an Excel column
+  const mappedUnique = uniqueFields.filter(f => !!mapping[f])
+  const uniqueOk = uniqueFields.length > 0 && mappedUnique.length === uniqueFields.length
+  const canImport = namaOk && uniqueOk && !importing
 
   function handleImport() {
-    if (!namaOk || !nikOk) {
-      return setError('Kolom Nama dan NIK wajib dipetakan')
+    if (!namaOk) return setError('Kolom Nama wajib dipetakan')
+    if (uniqueFields.length === 0) return setError('Pilih minimal satu patokan unik')
+    if (!uniqueOk) {
+      const missing = uniqueFields.filter(f => !mapping[f])
+      return setError(`Patokan unik berikut belum dipetakan ke kolom Excel: ${missing.join(', ')}`)
     }
     setError('')
-    onImport(mapping)
+    onImport(mapping, uniqueFields)
   }
 
   return (
@@ -659,6 +691,41 @@ function UploadMappingModal({ preview, onClose, onImport, importing }) {
                 </select>
               </div>
             ))}
+          </div>
+
+          {/* Unique fields selection — at import time */}
+          <div style={{ marginTop: 20 }}>
+            <p style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>
+              Patokan Unik (anti-duplikat)
+            </p>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+              Pilih field yang menentukan peserta unik. Baris dengan nilai sama akan dilewati saat import.
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {UNIQUE_FIELD_OPTIONS.map(opt => {
+                const selected = uniqueFields.includes(opt.key)
+                const mapped = !!mapping[opt.key]
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => toggleUnique(opt.key)}
+                    style={{
+                      padding: '7px 12px', borderRadius: '99px', cursor: 'pointer',
+                      fontSize: '0.78rem', fontWeight: 600, fontFamily: 'inherit',
+                      border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+                      background: selected ? '#eff6ff' : 'var(--surface)',
+                      color: selected ? 'var(--accent)' : 'var(--text-2)',
+                      opacity: selected && !mapped ? 0.6 : 1,
+                    }}
+                    title={selected && !mapped ? 'Field ini belum dipetakan ke kolom Excel' : ''}
+                  >
+                    {selected ? '✓ ' : ''}{opt.label}
+                    {selected && !mapped && ' (belum dipetakan)'}
+                  </button>
+                )
+              })}
+            </div>
           </div>
 
           {/* Sample preview */}

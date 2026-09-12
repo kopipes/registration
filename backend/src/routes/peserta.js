@@ -51,13 +51,14 @@ module.exports = async function (fastify) {
       const term = `%${q.trim()}%`;
       query += ` AND (
         p.nama LIKE ? OR
+        p.kode LIKE ? OR
         p.nik LIKE ? OR
         p.email LIKE ? OR
         p.no_telpon LIKE ? OR
         p.seat LIKE ? OR
         p.section LIKE ?
       )`;
-      params.push(term, term, term, term, term, term);
+      params.push(term, term, term, term, term, term, term);
     }
 
     if (section) {
@@ -133,7 +134,7 @@ module.exports = async function (fastify) {
     if (!batch) return reply.code(404).send({ error: 'Batch tidak ditemukan' });
 
     const result = db.prepare(
-      "UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE upload_batch_id = ? AND is_active = 1"
+      "UPDATE peserta SET is_active = 0, updated_at = datetime('now','localtime') WHERE upload_batch_id = ? AND is_active = 1"
     ).run(batchId);
 
     log({
@@ -226,7 +227,7 @@ module.exports = async function (fastify) {
         seat = COALESCE(?, seat),
         section = COALESCE(?, section),
         seat_number = COALESCE(?, seat_number),
-        updated_at = datetime('now')
+        updated_at = datetime('now','localtime')
       WHERE id = ? AND is_active = 1 AND project_id = ?
     `);
 
@@ -275,7 +276,7 @@ module.exports = async function (fastify) {
     const { ids } = request.body;
 
     const deleteStmt = db.prepare(
-      "UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE id = ? AND is_active = 1 AND project_id = ?"
+      "UPDATE peserta SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ? AND is_active = 1 AND project_id = ?"
     );
 
     const runBulk = db.transaction((idList) => {
@@ -308,9 +309,10 @@ module.exports = async function (fastify) {
     schema: {
       body: {
         type: 'object',
-        required: ['nama', 'nik'],
+        required: ['nama'],
         properties: {
           nama: { type: 'string' },
+          kode: { type: 'string' },
           nik: { type: 'string' },
           email: { type: 'string' },
           no_telpon: { type: 'string' },
@@ -324,22 +326,45 @@ module.exports = async function (fastify) {
     }
 
     const db = getDb();
-    const { nama, nik, email, no_telpon, seat } = request.body;
+    const { nama, kode, nik, email, no_telpon, seat } = request.body;
     const { section, seat_number } = parseSeat(seat);
+    const projectId = request.projectId;
 
-    const existing = db.prepare('SELECT id FROM peserta WHERE nik = ? AND project_id = ?')
-      .get(nik.trim(), request.projectId);
-    if (existing) return reply.code(409).send({ error: 'NIK sudah terdaftar di project ini' });
+    const row = {
+      nama: nama.trim(),
+      kode: kode?.trim() || null,
+      nik: nik?.trim() || null,
+      email: email?.trim() || null,
+      no_telpon: no_telpon?.trim() || null,
+    };
+
+    const uniqueFields = getUniqueFields(db, projectId);
+
+    // Require at least one configured identity value
+    if (!uniqueFields.some(f => row[f])) {
+      return reply.code(400).send({
+        error: `Minimal salah satu patokan unik harus diisi: ${uniqueFields.join(', ')}`,
+      });
+    }
+
+    // Duplicate check against configured unique fields (active rows only)
+    const dup = findDuplicate(db, projectId, row, uniqueFields);
+    if (dup) {
+      return reply.code(409).send({
+        error: `Peserta dengan ${dup.field} yang sama sudah terdaftar di project ini`,
+      });
+    }
 
     const result = db.prepare(`
-      INSERT INTO peserta (project_id, nama, nik, email, no_telpon, seat, section, seat_number)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO peserta (project_id, nama, kode, nik, email, no_telpon, seat, section, seat_number)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      request.projectId,
-      nama.trim(),
-      nik.trim(),
-      email?.trim() || null,
-      no_telpon?.trim() || null,
+      projectId,
+      row.nama,
+      row.kode,
+      row.nik,
+      row.email,
+      row.no_telpon,
       seat?.trim() || null,
       section,
       seat_number
@@ -351,8 +376,8 @@ module.exports = async function (fastify) {
       action: 'ADD_PESERTA',
       entity: 'peserta',
       entityId: result.lastInsertRowid,
-      projectId: request.projectId,
-      detail: { nama, nik },
+      projectId,
+      detail: { nama, kode, nik },
       ipAddress: request.ip,
     });
 
@@ -368,6 +393,7 @@ module.exports = async function (fastify) {
         type: 'object',
         properties: {
           nama: { type: 'string' },
+          kode: { type: 'string' },
           nik: { type: 'string' },
           email: { type: 'string' },
           no_telpon: { type: 'string' },
@@ -382,29 +408,44 @@ module.exports = async function (fastify) {
 
     const db = getDb();
     const id = Number(request.params.id);
+    const projectId = request.projectId;
     const peserta = db.prepare('SELECT * FROM peserta WHERE id = ? AND is_active = 1 AND project_id = ?')
-      .get(id, request.projectId);
+      .get(id, projectId);
     if (!peserta) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
 
-    const { nama, nik, email, no_telpon, seat } = request.body;
+    const { nama, kode, nik, email, no_telpon, seat } = request.body;
     const { section, seat_number } = parseSeat(seat || peserta.seat);
 
-    if (nik && nik.trim() !== peserta.nik) {
-      const existing = db.prepare('SELECT id FROM peserta WHERE nik = ? AND project_id = ? AND id != ?')
-        .get(nik.trim(), request.projectId, id);
-      if (existing) return reply.code(409).send({ error: 'NIK sudah digunakan peserta lain di project ini' });
+    const row = {
+      nama: nama?.trim() || peserta.nama,
+      kode: kode === undefined ? peserta.kode : (kode?.trim() || null),
+      nik: nik === undefined ? peserta.nik : (nik?.trim() || null),
+      email: email === undefined ? peserta.email : (email?.trim() || null),
+      no_telpon: no_telpon === undefined ? peserta.no_telpon : (no_telpon?.trim() || null),
+    };
+
+    const uniqueFields = getUniqueFields(db, projectId);
+    if (!uniqueFields.some(f => row[f])) {
+      return reply.code(400).send({
+        error: `Minimal salah satu patokan unik harus diisi: ${uniqueFields.join(', ')}`,
+      });
+    }
+
+    // Duplicate check excluding self
+    const dup = findDuplicate(db, projectId, row, uniqueFields, id);
+    if (dup) {
+      return reply.code(409).send({
+        error: `Peserta dengan ${dup.field} yang sama sudah terdaftar di project ini`,
+      });
     }
 
     db.prepare(`
       UPDATE peserta SET
-        nama = ?, nik = ?, email = ?, no_telpon = ?,
-        seat = ?, section = ?, seat_number = ?, updated_at = datetime('now')
+        nama = ?, kode = ?, nik = ?, email = ?, no_telpon = ?,
+        seat = ?, section = ?, seat_number = ?, updated_at = datetime('now','localtime')
       WHERE id = ?
     `).run(
-      nama?.trim() || peserta.nama,
-      nik?.trim() || peserta.nik,
-      email?.trim() ?? peserta.email,
-      no_telpon?.trim() ?? peserta.no_telpon,
+      row.nama, row.kode, row.nik, row.email, row.no_telpon,
       seat?.trim() ?? peserta.seat,
       section ?? peserta.section,
       seat_number ?? peserta.seat_number,
@@ -417,7 +458,7 @@ module.exports = async function (fastify) {
       action: 'EDIT_PESERTA',
       entity: 'peserta',
       entityId: id,
-      projectId: request.projectId,
+      projectId,
       detail: request.body,
       ipAddress: request.ip,
     });
@@ -442,7 +483,7 @@ module.exports = async function (fastify) {
       .get(id, request.projectId);
     if (!peserta) return reply.code(404).send({ error: 'Peserta tidak ditemukan' });
 
-    db.prepare("UPDATE peserta SET is_active = 0, updated_at = datetime('now') WHERE id = ?").run(id);
+    db.prepare("UPDATE peserta SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ?").run(id);
 
     log({
       userId: request.user.id,
@@ -499,9 +540,11 @@ module.exports = async function (fastify) {
     headers.forEach(h => {
       const key = h.name.toUpperCase();
       if (key.includes('NAMA')) autoMapping.nama = h.index;
+      else if (key.includes('KODE') || key.includes('TIKET') || key.includes('BOOKING') ||
+               key.includes('BKG') || key.includes('ORDER') || key.includes('INVOICE')) autoMapping.kode = h.index;
       else if (key.includes('NIK')) autoMapping.nik = h.index;
       else if (key.includes('EMAIL')) autoMapping.email = h.index;
-      else if (key.includes('TELPON') || key.includes('TELP') || key.includes('PHONE')) autoMapping.no_telpon = h.index;
+      else if (key.includes('TELPON') || key.includes('TELP') || key.includes('PHONE') || key.includes('WHATSAPP') || key.includes('WA')) autoMapping.no_telpon = h.index;
       else if (key.includes('SEAT') || key.includes('KURSI')) autoMapping.seat = h.index;
     });
 
@@ -578,7 +621,8 @@ module.exports = async function (fastify) {
       const raw = fields.mapping;
       if (raw) {
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        ['nama', 'nik', 'email', 'no_telpon', 'seat'].forEach(f => {
+        const ALLOWED = ['nama', 'kode', 'nik', 'email', 'no_telpon', 'seat'];
+        ALLOWED.forEach(f => {
           const v = parsed[f];
           if (v === null) { mapping[f] = null; }
           else if (v !== undefined && Number.isInteger(Number(v)) && Number(v) > 0) {
@@ -588,8 +632,8 @@ module.exports = async function (fastify) {
       }
     } catch { return reply.code(400).send({ error: 'Format mapping tidak valid' }); }
 
-    if (!mapping.nama || !mapping.nik) {
-      return reply.code(400).send({ error: 'Kolom untuk Nama dan NIK wajib dipetakan' });
+    if (!mapping.nama) {
+      return reply.code(400).send({ error: 'Kolom untuk Nama wajib dipetakan' });
     }
 
     const ExcelJS = require('exceljs');
@@ -602,6 +646,19 @@ module.exports = async function (fastify) {
     const db = getDb();
     const projectId = request.projectId;
 
+    // Unique fields: explicit from this import, else project config, else nik
+    let uniqueFields = getUniqueFields(db, projectId);
+    try {
+      const raw = fields.unique_fields;
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const valid = Array.isArray(parsed)
+          ? parsed.filter(f => ['kode', 'nik', 'email', 'no_telpon'].includes(f))
+          : [];
+        if (valid.length > 0) uniqueFields = [...new Set(valid)];
+      }
+    } catch { /* keep project default */ }
+
     let inserted = 0;
     let skipped = 0;
     const rowsToInsert = [];
@@ -609,64 +666,80 @@ module.exports = async function (fastify) {
     ws.eachRow((row, rowNum) => {
       if (rowNum === 1) return;
       const nama = mapping.nama ? getCellValue(row, mapping.nama) : null;
-      const nik = mapping.nik ? getCellValue(row, mapping.nik) : null;
-      if (!nama || !nik) return;
+      if (!nama) return;
 
+      const kode = mapping.kode ? getCellValue(row, mapping.kode) : null;
+      const nik = mapping.nik ? getCellValue(row, mapping.nik) : null;
+      const email = mapping.email ? getCellValue(row, mapping.email) : null;
+      const noTelpon = mapping.no_telpon ? getCellValue(row, mapping.no_telpon) : null;
       const seat = mapping.seat ? getCellValue(row, mapping.seat) : null;
       const { section, seat_number } = parseSeat(seat);
 
-      rowsToInsert.push({
+      const rowObj = {
         nama: String(nama).trim(),
-        nik: String(nik).trim(),
-        email: mapping.email ? getCellValue(row, mapping.email) || null : null,
-        no_telpon: mapping.no_telpon ? getCellValue(row, mapping.no_telpon) || null : null,
+        kode: kode ? String(kode).trim() : null,
+        nik: nik ? String(nik).trim() : null,
+        email: email ? String(email).trim() : null,
+        no_telpon: noTelpon ? String(noTelpon).trim() : null,
         seat: seat ? String(seat).trim() : null,
         section,
         seat_number,
-      });
+      };
+
+      // Require at least one identity value that is configured as unique
+      const hasIdentity = uniqueFields.some(f => rowObj[f]);
+      if (!hasIdentity) return; // unusable row — no identity data
+
+      rowsToInsert.push(rowObj);
     });
 
     if (rowsToInsert.length === 0) {
-      return reply.code(400).send({ error: 'Tidak ada baris valid ditemukan (kolom Nama/NIK kosong?)' });
+      return reply.code(400).send({ error: 'Tidak ada baris valid. Pastikan kolom Nama dan kolom patokan unik terisi.' });
     }
 
-    // Pre-fetch ALL peserta in this project by NIK (incl. soft-deleted — UNIQUE constraint)
-    const allByNik = new Map(
-      db.prepare('SELECT id, nik, email, is_active FROM peserta WHERE project_id = ?').all(projectId)
-        .map(r => [r.nik, r])
+    // Build a lookup of existing participants keyed by the configured unique fields.
+    // Identity key = JSON of the unique-field values (normalized, lowercased for text).
+    const identityKey = (row) => JSON.stringify(
+      uniqueFields.map(f => {
+        const v = row[f];
+        if (v === null || v === undefined || v === '') return null;
+        return String(v).trim().toLowerCase();
+      })
     );
-    const existingEmails = new Set(
-      db.prepare('SELECT LOWER(email) AS e FROM peserta WHERE project_id = ? AND is_active = 1 AND email IS NOT NULL')
-        .all(projectId).map(r => r.e)
-    );
+
+    const existingByKey = new Map();
+    const allRows = db.prepare(
+      `SELECT id, is_active, ${uniqueFields.join(', ')} FROM peserta WHERE project_id = ?`
+    ).all(projectId);
+    for (const r of allRows) {
+      const key = identityKey(r);
+      // Prefer active row as the canonical match
+      if (!existingByKey.has(key) || r.is_active === 1) existingByKey.set(key, r);
+    }
 
     const newRows = [];
     const reactivations = [];
     for (const row of rowsToInsert) {
-      const emailKey = row.email ? String(row.email).trim().toLowerCase() : null;
-      const existing = allByNik.get(row.nik);
+      const key = identityKey(row);
+      const existing = existingByKey.get(key);
 
       if (existing && existing.is_active === 1) { skipped++; continue; }
-      if (emailKey && existingEmails.has(emailKey)) { skipped++; continue; }
-
       if (existing && existing.is_active === 0) {
         reactivations.push({ existingId: existing.id, row });
       } else {
         newRows.push(row);
       }
-      if (emailKey) existingEmails.add(emailKey);
-      if (existing) { existing.is_active = 1; existing.email = emailKey; }
-      else allByNik.set(row.nik, { id: null, nik: row.nik, email: emailKey, is_active: 1 });
+      existingByKey.set(key, { id: null, is_active: 1, ...row });
     }
 
     const insertStmt = db.prepare(`
-      INSERT INTO peserta (project_id, nama, nik, email, no_telpon, seat, section, seat_number, upload_batch_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO peserta (project_id, nama, kode, nik, email, no_telpon, seat, section, seat_number, upload_batch_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const reactivateStmt = db.prepare(`
       UPDATE peserta SET
-        nama = ?, email = ?, no_telpon = ?, seat = ?, section = ?, seat_number = ?,
-        upload_batch_id = ?, is_active = 1, updated_at = datetime('now')
+        nama = ?, kode = ?, nik = ?, email = ?, no_telpon = ?, seat = ?, section = ?, seat_number = ?,
+        upload_batch_id = ?, is_active = 1, updated_at = datetime('now','localtime')
       WHERE id = ?
     `);
     const createBatchStmt = db.prepare(`
@@ -675,7 +748,7 @@ module.exports = async function (fastify) {
     `);
     const upsertMappingStmt = db.prepare(`
       INSERT INTO upload_mappings (project_id, field, source_column, updated_at)
-      VALUES (?, ?, ?, datetime('now'))
+      VALUES (?, ?, ?, datetime('now','localtime'))
       ON CONFLICT(project_id, field) DO UPDATE SET source_column = excluded.source_column, updated_at = excluded.updated_at
     `);
 
@@ -688,13 +761,13 @@ module.exports = async function (fastify) {
 
       for (const row of rows) {
         const result = insertStmt.run(
-          projectId, row.nama, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
+          projectId, row.nama, row.kode, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId
         );
         if (result.changes > 0) inserted++;
       }
       for (const { existingId, row } of reacts) {
         const result = reactivateStmt.run(
-          row.nama, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId, existingId
+          row.nama, row.kode, row.nik, row.email, row.no_telpon, row.seat, row.section, row.seat_number, batchId, existingId
         );
         if (result.changes > 0) { inserted++; reactivated++; }
       }
@@ -706,6 +779,10 @@ module.exports = async function (fastify) {
       for (const [field, col] of Object.entries(mapping)) {
         upsertMappingStmt.run(projectId, field, col === null ? '' : String(col));
       }
+
+      // Persist chosen unique fields as the project default
+      db.prepare("UPDATE projects SET unique_fields = ?, updated_at = datetime('now','localtime') WHERE id = ?")
+        .run(JSON.stringify(uniqueFields), projectId);
     });
 
     insertMany(newRows, reactivations);
@@ -731,6 +808,41 @@ module.exports = async function (fastify) {
     };
   });
 };
+
+/**
+ * Which fields identify a unique participant for this project.
+ * Stored as JSON array on projects.unique_fields. Falls back to ['nik'].
+ */
+function getUniqueFields(db, projectId) {
+  const ALLOWED = ['kode', 'nik', 'email', 'no_telpon'];
+  try {
+    const project = db.prepare('SELECT unique_fields FROM projects WHERE id = ?').get(projectId);
+    const parsed = JSON.parse(project?.unique_fields || '[]');
+    const valid = Array.isArray(parsed) ? parsed.filter(f => ALLOWED.includes(f)) : [];
+    return valid.length > 0 ? valid : ['nik'];
+  } catch {
+    return ['nik'];
+  }
+}
+
+/**
+ * Find an existing ACTIVE peserta in this project that collides on any
+ * configured unique field. Returns { field, id } or null.
+ */
+function findDuplicate(db, projectId, row, uniqueFields, excludeId = null) {
+  for (const field of uniqueFields) {
+    const value = row[field];
+    if (!value) continue;
+    const sql = `SELECT id FROM peserta
+                 WHERE project_id = ? AND is_active = 1 AND LOWER(${field}) = LOWER(?)
+                 ${excludeId ? 'AND id != ?' : ''}
+                 LIMIT 1`;
+    const params = excludeId ? [projectId, value, excludeId] : [projectId, value];
+    const found = db.prepare(sql).get(...params);
+    if (found) return { field, id: found.id };
+  }
+  return null;
+}
 
 function parseSeat(seat) {
   if (!seat) return { section: null, seat_number: null };

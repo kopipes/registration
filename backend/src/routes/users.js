@@ -102,7 +102,7 @@ module.exports = async function (fastify) {
     db.prepare(`
       UPDATE users SET
         username = ?, full_name = ?, role = ?, password = ?, is_active = ?,
-        updated_at = datetime('now')
+        updated_at = datetime('now','localtime')
       WHERE id = ?
     `).run(
       username ? username.trim().toLowerCase() : user.username,
@@ -181,7 +181,7 @@ module.exports = async function (fastify) {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) return reply.code(404).send({ error: 'User tidak ditemukan' });
 
-    db.prepare("UPDATE users SET is_active = 0, updated_at = datetime('now') WHERE id = ?").run(id);
+    db.prepare("UPDATE users SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ?").run(id);
 
     log({
       userId: request.user.id,
@@ -218,7 +218,7 @@ module.exports = async function (fastify) {
     }
 
     const hash = bcrypt.hashSync(request.body.new_password, 10);
-    db.prepare("UPDATE users SET password = ?, updated_at = datetime('now') WHERE id = ?").run(hash, user.id);
+    db.prepare("UPDATE users SET password = ?, updated_at = datetime('now','localtime') WHERE id = ?").run(hash, user.id);
 
     log({
       userId: user.id,

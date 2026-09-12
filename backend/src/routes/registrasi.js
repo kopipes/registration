@@ -58,7 +58,7 @@ module.exports = async function (fastify) {
 
     const result = db.prepare(`
       INSERT INTO registrations (peserta_id, status, registered_by, registered_at)
-      VALUES (?, 'registered', ?, datetime('now'))
+      VALUES (?, 'registered', ?, datetime('now','localtime'))
     `).run(pesertaId, request.user.id);
 
     log({
@@ -103,7 +103,7 @@ module.exports = async function (fastify) {
 
     db.prepare(`
       UPDATE registrations
-      SET status = 'cancelled', cancelled_by = ?, cancelled_at = datetime('now'), cancel_reason = ?
+      SET status = 'cancelled', cancelled_by = ?, cancelled_at = datetime('now','localtime'), cancel_reason = ?
       WHERE id = ?
     `).run(request.user.id, reason, lastReg.id);
 

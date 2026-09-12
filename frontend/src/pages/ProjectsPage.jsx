@@ -32,6 +32,11 @@ export default function ProjectsPage() {
     onSuccess: () => { refetchProjects(); qc.invalidateQueries({ queryKey: ['projects-archived'] }) },
   })
 
+  const deleteMutation = useMutation({
+    mutationFn: ({ id, confirmName }) => api.delete(`/projects/${id}`, { data: { confirm_name: confirmName } }),
+    onSuccess: () => { refetchProjects(); qc.invalidateQueries({ queryKey: ['projects-archived'] }) },
+  })
+
   function openProject(p) {
     localStorage.setItem('project_id', String(p.id))
     navigate('/')
@@ -119,6 +124,11 @@ export default function ProjectsPage() {
                         }
                       }}
                     >Arsipkan</button>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                      onClick={() => setModal({ type: 'delete', project: p })}
+                    >Hapus</button>
                   </div>
                 )}
               </button>
@@ -155,6 +165,11 @@ export default function ProjectsPage() {
                         className="btn btn-success btn-sm"
                         onClick={() => unarchiveMutation.mutate(p.id)}
                       >Aktifkan</button>
+                      <button
+                        className="btn btn-outline btn-sm"
+                        style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                        onClick={() => setModal({ type: 'delete', project: p })}
+                      >Hapus</button>
                     </div>
                   </div>
                 ))}
@@ -171,6 +186,80 @@ export default function ProjectsPage() {
           onSaved={() => { refetchProjects(); setModal(null) }}
         />
       )}
+      {modal?.type === 'delete' && (
+        <DeleteProjectModal
+          project={modal.project}
+          deleting={deleteMutation.isPending}
+          error={deleteMutation.error?.response?.data?.error}
+          onClose={() => { deleteMutation.reset(); setModal(null) }}
+          onConfirm={(confirmName) => deleteMutation.mutate(
+            { id: modal.project.id, confirmName },
+            { onSuccess: () => setModal(null) }
+          )}
+        />
+      )}
+    </div>
+  )
+}
+
+function DeleteProjectModal({ project, deleting, error, onClose, onConfirm }) {
+  const projectName = project.event_name || project.name
+  const [typed, setTyped] = useState('')
+  const matches = typed.trim().toLowerCase() === projectName.trim().toLowerCase()
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <h3>Hapus Project Permanen</h3>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          {error && <div className="alert alert-danger">{error}</div>}
+
+          <div className="alert alert-danger" style={{ marginBottom: 16 }}>
+            <div>
+              <strong>Peringatan:</strong> tindakan ini <strong>tidak bisa dibatalkan</strong>.
+              Semua data berikut akan dihapus permanen:
+              <ul style={{ margin: '8px 0 0 18px', fontSize: '0.82rem' }}>
+                <li>{project.peserta_count || 0} peserta</li>
+                <li>{project.registered_count || 0} riwayat check-in</li>
+                <li>Semua batch upload & pemetaan kolom</li>
+              </ul>
+            </div>
+          </div>
+
+          <p style={{ fontSize: '0.85rem', marginBottom: 10 }}>
+            Ketik nama project berikut untuk konfirmasi:
+            <br />
+            <strong style={{ fontSize: '0.95rem' }}>{projectName}</strong>
+          </p>
+          <input
+            type="text"
+            value={typed}
+            onChange={e => setTyped(e.target.value)}
+            placeholder={projectName}
+            autoFocus
+            style={{ borderColor: typed && !matches ? 'var(--danger)' : undefined }}
+          />
+          {typed && !matches && (
+            <div className="form-error">Nama tidak cocok</div>
+          )}
+          <div className="form-hint" style={{ marginTop: 8 }}>
+            Tip: bisa juga arsipkan project ini jika hanya ingin menyembunyikannya.
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-outline" onClick={onClose} disabled={deleting}>Batal</button>
+          <button
+            className="btn btn-danger"
+            onClick={() => matches && onConfirm(typed)}
+            disabled={!matches || deleting}
+          >
+            {deleting ? 'Menghapus...' : 'Hapus Permanen'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

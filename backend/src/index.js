@@ -1,5 +1,9 @@
 'use strict';
 
+// Force WIB (Asia/Jakarta) regardless of host timezone, so SQLite
+// datetime('now','localtime') and JS toLocale* render Jakarta time.
+process.env.TZ = process.env.TZ || 'Asia/Jakarta';
+
 require('dotenv').config();
 
 const fastify = require('fastify')({ logger: true });
