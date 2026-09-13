@@ -1,18 +1,23 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../lib/api'
+import { useAuth } from './AuthContext'
 
 const ProjectContext = createContext(null)
 
 export function ProjectProvider({ children }) {
+  const { user, loading: authLoading } = useAuth()
   const [projectId, setProjectIdState] = useState(
     () => localStorage.getItem('project_id') || null
   )
 
-  // Load active projects list (used by switcher + project page)
+  // Load active projects list (used by switcher + project page).
+  // Gated on auth so the first global fetch doesn't fire unauthenticated
+  // (which would cache an auth error and require a manual refresh).
   const { data: projects = [], isLoading, refetch } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.get('/projects').then(r => r.data),
+    enabled: !authLoading && !!user,
   })
 
   const activeProject = projects.find(p => String(p.id) === String(projectId)) || null

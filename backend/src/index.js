@@ -92,11 +92,13 @@ async function start() {
     const url = request.url.split('?')[0];
     if (!url.startsWith('/api/')) return;
 
-    // Skip project requirement for these paths
+    // Skip project requirement for these paths (global, not project-scoped)
     const skipPaths = [
       '/api/auth', '/api/health',
       '/api/projects', '/api/projects/',
       '/api/audit', '/api/audit/',
+      '/api/users', '/api/users/',
+      '/api/settings', '/api/settings/',
     ];
     if (skipPaths.some(p => url === p || url.startsWith(p + '/'))) return;
     // /api/projects itself needs scoping only for nested mutations — handled in route

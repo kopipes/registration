@@ -1,9 +1,11 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import api from '../lib/api'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
+  const qc = useQueryClient()
   const [user, setUser] = useState(() => {
     try {
       const stored = localStorage.getItem('user')
@@ -39,6 +41,9 @@ export function AuthProvider({ children }) {
     localStorage.setItem('token', token)
     localStorage.setItem('user', JSON.stringify(userData))
     setUser(userData)
+    // Drop pre-login cached queries (e.g. failed unauthenticated fetches)
+    // so everything refetches fresh with the new session.
+    await qc.invalidateQueries()
     return userData
   }
 
@@ -46,6 +51,9 @@ export function AuthProvider({ children }) {
     try { await api.post('/auth/logout') } catch { /* ignore */ }
     localStorage.removeItem('token')
     localStorage.removeItem('user')
+    // Clear cached data so the previous user's data never leaks
+    // into the next session.
+    qc.clear()
     setUser(null)
   }
 
