@@ -113,20 +113,20 @@ export default function SettingsPage() {
       </div>
       <div className="page-body" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
-        {/* Event Name */}
+        {/* Project-specific event name */}
         <div className="card">
-          <div className="card-header"><h2>Nama Event</h2></div>
+          <div className="card-header"><h2>Nama Event Project</h2></div>
           <div className="card-body">
             {saveMsg && <div className="alert alert-success">{saveMsg}</div>}
             <div className="form-group">
-              <label>Nama Event</label>
+              <label>Nama Event untuk Project Ini</label>
               <input
                 type="text"
                 value={eventName}
                 onChange={e => setEventName(e.target.value)}
                 placeholder="Contoh: iQIYI Starship 2026"
               />
-              <div className="form-hint">Ditampilkan di header project & halaman check-in</div>
+              <div className="form-hint">Hanya berlaku untuk project ini dan tidak mengubah nama aplikasi.</div>
             </div>
             <button
               className="btn btn-primary btn-sm"

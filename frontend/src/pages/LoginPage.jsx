@@ -1,8 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { useQuery } from '@tanstack/react-query'
-import api from '../lib/api'
 
 export default function LoginPage() {
   const { login } = useAuth()
@@ -10,12 +8,6 @@ export default function LoginPage() {
   const [form, setForm] = useState({ username: '', password: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-
-  const { data: settings } = useQuery({
-    queryKey: ['settings-public'],
-    queryFn: () => api.get('/settings').then(r => r.data).catch(() => ({})),
-    staleTime: 60_000,
-  })
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -40,7 +32,7 @@ export default function LoginPage() {
             <div className="login-icon">🎫</div>
           </div>
           <div className="login-title">
-            {settings?.event_name || 'Event Registration'}
+            Event Registration
           </div>
           <div className="login-sub">Sistem Registrasi Pengunjung</div>
 
