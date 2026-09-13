@@ -42,9 +42,9 @@ export default function App() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to="/projects" replace /> : <LoginPage />} />
+      <Route path="/login" element={user ? <Navigate to={user.role === 'crew' ? '/checkin' : '/projects'} replace /> : <LoginPage />} />
       <Route path="/projects" element={
-        <ProtectedRoute>
+        <ProtectedRoute roles={['admin', 'official']}>
           <AppLayout><ProjectsPage /></AppLayout>
         </ProtectedRoute>
       } />
@@ -78,7 +78,7 @@ export default function App() {
           </ProtectedRoute>
         } />
       </Route>
-      <Route path="*" element={<Navigate to={user ? '/projects' : '/login'} replace />} />
+      <Route path="*" element={<Navigate to={user ? (user.role === 'crew' ? '/checkin' : '/projects') : '/login'} replace />} />
     </Routes>
   )
 }

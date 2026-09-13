@@ -13,9 +13,13 @@ module.exports = async function (fastify) {
       return reply.code(403).send({ error: 'Akses ditolak' });
     }
     const db = getDb();
-    const users = db.prepare(
-      'SELECT id, username, full_name, role, is_active, created_at FROM users ORDER BY created_at DESC'
-    ).all();
+    const users = db.prepare(`
+      SELECT u.id, u.username, u.full_name, u.role, u.project_id, u.is_active, u.created_at,
+             p.name AS project_name, p.event_name AS project_event_name
+      FROM users u
+      LEFT JOIN projects p ON p.id = u.project_id
+      ORDER BY u.created_at DESC
+    `).all();
     return users;
   });
 
@@ -31,6 +35,7 @@ module.exports = async function (fastify) {
           password: { type: 'string', minLength: 6 },
           full_name: { type: 'string' },
           role: { type: 'string', enum: ['admin', 'official', 'crew'] },
+          project_id: { type: 'integer' },
         },
       },
     },
@@ -40,16 +45,24 @@ module.exports = async function (fastify) {
     }
 
     const db = getDb();
-    const { username, password, full_name, role } = request.body;
+    const { username, password, full_name, role, project_id } = request.body;
+
+    let assignedProjectId = null;
+    if (role === 'crew') {
+      if (!project_id) return reply.code(400).send({ error: 'Project wajib dipilih untuk akun Crew' });
+      const project = db.prepare("SELECT id FROM projects WHERE id = ? AND status = 'active'").get(project_id);
+      if (!project) return reply.code(400).send({ error: 'Project Crew tidak valid atau sudah diarsipkan' });
+      assignedProjectId = project.id;
+    }
 
     const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username.trim().toLowerCase());
     if (existing) return reply.code(409).send({ error: 'Username sudah digunakan' });
 
     const hash = bcrypt.hashSync(password, 10);
     const result = db.prepare(`
-      INSERT INTO users (username, password, full_name, role)
-      VALUES (?, ?, ?, ?)
-    `).run(username.trim().toLowerCase(), hash, full_name.trim(), role);
+      INSERT INTO users (username, password, full_name, role, project_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(username.trim().toLowerCase(), hash, full_name.trim(), role, assignedProjectId);
 
     log({
       userId: request.user.id,
@@ -57,7 +70,7 @@ module.exports = async function (fastify) {
       action: 'CREATE_USER',
       entity: 'users',
       entityId: result.lastInsertRowid,
-      detail: { username, full_name, role },
+      detail: { username, full_name, role, project_id: assignedProjectId },
       ipAddress: request.ip,
     });
 
@@ -77,6 +90,7 @@ module.exports = async function (fastify) {
           role:      { type: 'string', enum: ['admin', 'official', 'crew'] },
           password:  { type: 'string', minLength: 6 },
           is_active: { type: 'integer', enum: [0, 1] },
+          project_id: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
         },
       },
     },
@@ -90,8 +104,19 @@ module.exports = async function (fastify) {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) return reply.code(404).send({ error: 'User tidak ditemukan' });
 
-    const { username, full_name, role, password, is_active } = request.body;
+    const { username, full_name, role, password, is_active, project_id } = request.body;
     const hash = password ? bcrypt.hashSync(password, 10) : user.password;
+    const finalRole = role ?? user.role;
+    let assignedProjectId = finalRole === 'crew'
+      ? (project_id === undefined ? user.project_id : project_id)
+      : null;
+
+    if (finalRole === 'crew') {
+      if (!assignedProjectId) return reply.code(400).send({ error: 'Project wajib dipilih untuk akun Crew' });
+      const project = db.prepare("SELECT id FROM projects WHERE id = ? AND status = 'active'").get(assignedProjectId);
+      if (!project) return reply.code(400).send({ error: 'Project Crew tidak valid atau sudah diarsipkan' });
+      assignedProjectId = project.id;
+    }
 
     // Check username uniqueness if changed
     if (username && username.trim().toLowerCase() !== user.username) {
@@ -100,18 +125,20 @@ module.exports = async function (fastify) {
     }
 
     // Revoke existing sessions if password changed or account disabled
-    const shouldRevoke = !!password || (is_active !== undefined && is_active === 0);
+    const shouldRevoke = !!password || (is_active !== undefined && is_active === 0) ||
+      finalRole !== user.role || assignedProjectId !== user.project_id;
 
     db.prepare(`
       UPDATE users SET
-        username = ?, full_name = ?, role = ?, password = ?, is_active = ?,
+        username = ?, full_name = ?, role = ?, project_id = ?, password = ?, is_active = ?,
         token_version = token_version + ?,
         updated_at = datetime('now','localtime')
       WHERE id = ?
     `).run(
       username ? username.trim().toLowerCase() : user.username,
       full_name ?? user.full_name,
-      role ?? user.role,
+      finalRole,
+      assignedProjectId,
       hash,
       is_active ?? user.is_active,
       shouldRevoke ? 1 : 0,
@@ -124,7 +151,7 @@ module.exports = async function (fastify) {
       action: 'EDIT_USER',
       entity: 'users',
       entityId: id,
-      detail: { username, full_name, role, is_active, password_changed: !!password },
+      detail: { username, full_name, role, project_id: assignedProjectId, is_active, password_changed: !!password },
       ipAddress: request.ip,
     });
 

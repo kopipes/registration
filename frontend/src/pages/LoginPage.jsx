@@ -14,8 +14,8 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      await login(form.username.trim(), form.password)
-      navigate('/projects')
+      const user = await login(form.username.trim(), form.password)
+      navigate(user.role === 'crew' ? '/checkin' : '/projects')
     } catch (err) {
       setError(err.response?.data?.error || 'Login gagal. Periksa username dan password.')
     } finally {

@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
+import { useProject } from '../context/ProjectContext'
 
 export default function UsersPage() {
   const { user: currentUser } = useAuth()
+  const { projects } = useProject()
   const qc = useQueryClient()
   const [modal, setModal] = useState(null)
 
@@ -72,6 +74,7 @@ export default function UsersPage() {
                       <th>Nama</th>
                       <th>Username</th>
                       <th>Role</th>
+                      <th>Project Crew</th>
                       <th>Status</th>
                       <th>Dibuat</th>
                       <th>Aksi</th>
@@ -83,6 +86,9 @@ export default function UsersPage() {
                         <td><strong>{u.full_name}</strong></td>
                         <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{u.username}</td>
                         <td><span className={`badge ${ROLE_BADGE[u.role]}`}>{ROLE_LABEL[u.role]}</span></td>
+                        <td style={{ fontSize: '0.8rem' }}>
+                          {u.role === 'crew' ? (u.project_event_name || u.project_name || 'Belum ditugaskan') : '—'}
+                        </td>
                         <td>
                           {u.is_active
                             ? <span className="badge badge-success">Aktif</span>
@@ -133,6 +139,11 @@ export default function UsersPage() {
                               : <span className="badge badge-muted">Nonaktif</span>}
                           </div>
                         </div>
+                        {u.role === 'crew' && (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 10 }}>
+                            Project: <strong>{u.project_event_name || u.project_name || 'Belum ditugaskan'}</strong>
+                          </div>
+                        )}
                         {/* Actions */}
                         <div style={{ paddingTop: 10, borderTop: '1px solid var(--border)' }}>
                           <UserActions u={u} />
@@ -147,10 +158,10 @@ export default function UsersPage() {
       </div>
 
       {modal?.type === 'add' && (
-        <UserFormModal onClose={() => setModal(null)} onSaved={() => { qc.invalidateQueries({ queryKey: ['users'] }); setModal(null) }} />
+        <UserFormModal projects={projects} onClose={() => setModal(null)} onSaved={() => { qc.invalidateQueries({ queryKey: ['users'] }); setModal(null) }} />
       )}
       {modal?.type === 'edit' && (
-        <UserFormModal user={modal.user} onClose={() => setModal(null)} onSaved={() => { qc.invalidateQueries({ queryKey: ['users'] }); setModal(null) }} />
+        <UserFormModal user={modal.user} projects={projects} onClose={() => setModal(null)} onSaved={() => { qc.invalidateQueries({ queryKey: ['users'] }); setModal(null) }} />
       )}
       {modal?.type === 'password' && (
         <ChangePasswordModal user={modal.user} onClose={() => setModal(null)} />
@@ -159,10 +170,10 @@ export default function UsersPage() {
   )
 }
 
-function UserFormModal({ user, onClose, onSaved }) {
+function UserFormModal({ user, projects, onClose, onSaved }) {
   const [form, setForm] = useState({
     username: user?.username || '', full_name: user?.full_name || '',
-    role: user?.role || 'crew', password: '',
+    role: user?.role || 'crew', password: '', project_id: user?.project_id ? String(user.project_id) : '',
   })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -171,7 +182,13 @@ function UserFormModal({ user, onClose, onSaved }) {
   async function handleSubmit(e) {
     e.preventDefault(); setError(''); setLoading(true)
     try {
-      const payload = isEdit ? { username: form.username, full_name: form.full_name, role: form.role } : form
+      const payload = {
+        username: form.username,
+        full_name: form.full_name,
+        role: form.role,
+        project_id: form.role === 'crew' ? Number(form.project_id) : null,
+        ...(!isEdit ? { password: form.password } : {}),
+      }
       isEdit ? await api.put(`/users/${user.id}`, payload) : await api.post('/users', payload)
       onSaved()
     } catch (err) {
@@ -210,6 +227,24 @@ function UserFormModal({ user, onClose, onSaved }) {
                 <option value="admin">Admin</option>
               </select>
             </div>
+            {form.role === 'crew' && (
+              <div className="form-group">
+                <label>Project Crew *</label>
+                <select
+                  value={form.project_id}
+                  onChange={e => setForm(f => ({ ...f, project_id: e.target.value }))}
+                  required
+                >
+                  <option value="">Pilih project...</option>
+                  {projects.map(project => (
+                    <option key={project.id} value={project.id}>
+                      {project.event_name || project.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="form-hint">Crew langsung masuk ke project ini dan tidak dapat menggantinya.</div>
+              </div>
+            )}
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-outline" onClick={onClose} disabled={loading}>Batal</button>

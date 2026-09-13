@@ -21,6 +21,9 @@ export function AuthProvider({ children }) {
     if (token) {
       api.get('/auth/me')
         .then(res => {
+          if (res.data.role === 'crew' && res.data.project_id) {
+            localStorage.setItem('project_id', String(res.data.project_id))
+          }
           setUser(res.data)
           localStorage.setItem('user', JSON.stringify(res.data))
         })
@@ -40,6 +43,9 @@ export function AuthProvider({ children }) {
     const { token, user: userData } = res.data
     localStorage.setItem('token', token)
     localStorage.setItem('user', JSON.stringify(userData))
+    if (userData.role === 'crew' && userData.project_id) {
+      localStorage.setItem('project_id', String(userData.project_id))
+    }
     setUser(userData)
     // Drop pre-login cached queries (e.g. failed unauthenticated fetches)
     // so everything refetches fresh with the new session.
@@ -51,6 +57,7 @@ export function AuthProvider({ children }) {
     try { await api.post('/auth/logout') } catch { /* ignore */ }
     localStorage.removeItem('token')
     localStorage.removeItem('user')
+    localStorage.removeItem('project_id')
     // Clear cached data so the previous user's data never leaks
     // into the next session.
     qc.clear()

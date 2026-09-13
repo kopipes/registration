@@ -56,7 +56,7 @@ async function start() {
       return reply.code(401).send({ error: 'Unauthorized' });
     }
 
-    const row = db.prepare('SELECT id, username, full_name, role, is_active, token_version FROM users WHERE id = ?')
+    const row = db.prepare('SELECT id, username, full_name, role, project_id, is_active, token_version FROM users WHERE id = ?')
       .get(request.user.id);
 
     if (!row || row.is_active !== 1) {
@@ -65,6 +65,9 @@ async function start() {
     if ((request.user.token_version ?? 1) !== (row.token_version ?? 1)) {
       return reply.code(401).send({ error: 'Sesi berakhir. Silakan login kembali.' });
     }
+    if (row.role === 'crew' && request.projectId && row.project_id !== request.projectId) {
+      return reply.code(403).send({ error: 'Crew hanya dapat mengakses project yang ditugaskan' });
+    }
 
     // Refresh user data so role changes apply immediately
     request.user = {
@@ -72,6 +75,7 @@ async function start() {
       username: row.username,
       full_name: row.full_name,
       role: row.role,
+      project_id: row.project_id,
       token_version: row.token_version,
     };
   });

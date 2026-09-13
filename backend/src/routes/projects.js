@@ -14,6 +14,8 @@ module.exports = async function (fastify) {
   }, async (request) => {
     const db = getDb();
     const includeArchived = request.query.archived === '1';
+    const crewFilter = request.user.role === 'crew' ? 'AND p.id = ?' : '';
+    const params = request.user.role === 'crew' ? [request.user.project_id] : [];
     const rows = db.prepare(`
       SELECT
         p.*,
@@ -22,9 +24,11 @@ module.exports = async function (fastify) {
           JOIN registrations r ON r.peserta_id = x.id AND r.status = 'registered'
           WHERE x.project_id = p.id AND x.is_active = 1) AS registered_count
       FROM projects p
-      ${includeArchived ? '' : "WHERE p.status = 'active'"}
+      WHERE 1 = 1
+        ${includeArchived ? '' : "AND p.status = 'active'"}
+        ${crewFilter}
       ORDER BY p.created_at DESC
-    `).all();
+    `).all(...params);
     return rows;
   });
 
@@ -34,7 +38,11 @@ module.exports = async function (fastify) {
     schema: { params: { type: 'object', properties: { id: { type: 'integer' } } } },
   }, async (request, reply) => {
     const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(request.params.id));
+    const projectId = Number(request.params.id);
+    if (request.user.role === 'crew' && request.user.project_id !== projectId) {
+      return reply.code(403).send({ error: 'Crew hanya dapat mengakses project yang ditugaskan' });
+    }
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
     if (!project) return reply.code(404).send({ error: 'Project tidak ditemukan' });
     return project;
   });
@@ -288,6 +296,7 @@ module.exports = async function (fastify) {
       db.prepare('DELETE FROM peserta WHERE project_id = ?').run(id);
       db.prepare('DELETE FROM upload_mappings WHERE project_id = ?').run(id);
       db.prepare('DELETE FROM upload_batches WHERE project_id = ?').run(id);
+      db.prepare('UPDATE users SET project_id = NULL WHERE project_id = ?').run(id);
       // Audit log keeps history, but drop the FK reference to the removed project
       db.prepare('UPDATE audit_log SET project_id = NULL WHERE project_id = ?').run(id);
       db.prepare('DELETE FROM projects WHERE id = ?').run(id);

@@ -103,6 +103,15 @@ module.exports = async function (fastify) {
       return reply.code(401).send({ error: 'Username atau password salah' });
     }
 
+    if (user.role === 'crew') {
+      const assignedProject = user.project_id
+        ? db.prepare("SELECT id FROM projects WHERE id = ? AND status = 'active'").get(user.project_id)
+        : null;
+      if (!assignedProject) {
+        return reply.code(403).send({ error: 'Akun Crew belum ditugaskan ke project aktif. Hubungi Admin.' });
+      }
+    }
+
     clearFailures(username, request.ip);
 
     const token = fastify.jwt.sign({
@@ -110,6 +119,7 @@ module.exports = async function (fastify) {
       username: user.username,
       full_name: user.full_name,
       role: user.role,
+      project_id: user.project_id,
       token_version: user.token_version ?? 1,
     });
 
@@ -127,6 +137,7 @@ module.exports = async function (fastify) {
         username: user.username,
         full_name: user.full_name,
         role: user.role,
+        project_id: user.project_id,
       },
     };
   });
@@ -137,7 +148,7 @@ module.exports = async function (fastify) {
   }, async (request) => {
     const db = getDb();
     const user = db.prepare(
-      'SELECT id, username, full_name, role FROM users WHERE id = ? AND is_active = 1'
+      'SELECT id, username, full_name, role, project_id FROM users WHERE id = ? AND is_active = 1'
     ).get(request.user.id);
 
     if (!user) {

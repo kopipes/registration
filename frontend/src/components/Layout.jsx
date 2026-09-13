@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { useProject } from '../context/ProjectContext'
 
 const NAV_ITEMS = [
-  { to: '/',        end: true,  icon: '▦', label: 'Dashboard', roles: null },
+  { to: '/',        end: true,  icon: '▦', label: 'Dashboard', roles: ['admin', 'official'] },
   { to: '/checkin',             icon: '✓', label: 'Check-in',  roles: null },
   { to: '/peserta',             icon: '☰', label: 'Peserta',   roles: ['admin', 'official'] },
   { to: '/settings',            icon: '⚙', label: 'Settings',  roles: ['admin'] },
@@ -41,13 +41,15 @@ export default function Layout() {
             : <div style={{ fontSize: '1.5rem', marginBottom: 4 }}>🎫</div>
           }
           <div className="sidebar-title">{projectLabel}</div>
-          <button
-            className="btn-switch-project"
-            onClick={switchProject}
-            title="Kembali ke daftar project"
-          >
-            ⇄ Ganti Project
-          </button>
+          {user?.role !== 'crew' && (
+            <button
+              className="btn-switch-project"
+              onClick={switchProject}
+              title="Kembali ke daftar project"
+            >
+              ⇄ Ganti Project
+            </button>
+          )}
         </div>
 
         <nav className="sidebar-nav">
@@ -82,10 +84,12 @@ export default function Layout() {
               <span>{item.label}</span>
             </NavLink>
           ))}
-          <button className="nav-btn" onClick={switchProject}>
-            <span className="bottom-nav-icon">⇄</span>
-            <span>Project</span>
-          </button>
+          {user?.role !== 'crew' && (
+            <button className="nav-btn" onClick={switchProject}>
+              <span className="bottom-nav-icon">⇄</span>
+              <span>Project</span>
+            </button>
+          )}
         </div>
       </nav>
 

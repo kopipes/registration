@@ -29,6 +29,7 @@ function initDb(dbPath) {
       password    TEXT NOT NULL,
       full_name   TEXT NOT NULL,
       role        TEXT NOT NULL CHECK(role IN ('admin', 'official', 'crew')),
+      project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
       is_active   INTEGER NOT NULL DEFAULT 1,
       token_version INTEGER NOT NULL DEFAULT 1,
       created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -235,6 +236,19 @@ function initDb(dbPath) {
   if (!userCols.includes('token_version')) {
     db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1');
     console.log('Migration: added users.token_version');
+  }
+
+  // Migration 7: each crew account is assigned to exactly one project.
+  // Existing crew accounts inherit the oldest active project to preserve access.
+  const userCols2 = db.pragma('table_info(users)').map(c => c.name);
+  if (!userCols2.includes('project_id')) {
+    db.exec('ALTER TABLE users ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL');
+    db.exec(`
+      UPDATE users
+      SET project_id = (SELECT id FROM projects WHERE status = 'active' ORDER BY id LIMIT 1)
+      WHERE role = 'crew' AND project_id IS NULL
+    `);
+    console.log('Migration: added users.project_id and assigned existing crew');
   }
 
   // Index on migrated column — safe after migration has run
